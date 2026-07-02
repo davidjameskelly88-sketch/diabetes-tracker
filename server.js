@@ -702,7 +702,8 @@ app.post('/api/health',requireAuth,async(req,res)=>{
         if(!data.activities.some(a=>a.type==='workout'&&a.startTime===w.startTime)){
           data.activities.unshift({id:Date.now()+Math.random(),type:'workout',time:Date.now(),
             workoutType:w.workoutType||'Exercise',duration:w.duration||null,calories:w.calories||null,
-            startTime:w.startTime,endTime:w.endTime,distance:w.distance||null,avgHeartRate:w.avgHeartRate||null});
+            startTime:w.startTime,endTime:w.endTime,distance:w.distance||null,
+            avgHeartRate:w.avgHeartRate||null,maxHeartRate:w.maxHeartRate||null});
         }
       }
     }
