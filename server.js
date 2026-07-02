@@ -175,8 +175,12 @@ async function fetchGlucose() {
     const data=await loadData();
     const last=data.glucoseHistory[data.glucoseHistory.length-1];
     const trend=computeTrend(mmol,ts,data.glucoseHistory)||apiTrend;
+    // Raw change since the last stored reading (~5min at our poll cadence), for the small
+    // "+0.3 (5m)" corner note on the glucose card - independent of the bucketed trend arrow.
+    const deltaMinutes=last?Math.round((ts-last.time)/60000):null;
+    const delta=(last&&deltaMinutes>0&&deltaMinutes<=20)?parseFloat((mmol-last.value).toFixed(1)):null;
 
-    glucoseCache={value:mmol,valueMgDl:mgdl,unit:'mmol/L',trend:trend.arrow,trendLabel:trend.label,timestamp,fetchedAt:Date.now()};
+    glucoseCache={value:mmol,valueMgDl:mgdl,unit:'mmol/L',trend:trend.arrow,trendLabel:trend.label,delta,deltaMinutes:delta!=null?deltaMinutes:null,timestamp,fetchedAt:Date.now()};
     glucoseCacheTime=Date.now();
     // Store history
     if(!last||Math.abs(ts-last.time)>3*60000){
@@ -449,7 +453,9 @@ async function getDailySummary() {
       min: todayGlucose.length ? Math.min(...todayGlucose.map(g=>g.value)).toFixed(1) : null,
       max: todayGlucose.length ? Math.max(...todayGlucose.map(g=>g.value)).toFixed(1) : null },
     insulin: {
-      totalBolus: todayBoluses.reduce((s,b) => s + b.units, 0).toFixed(1),
+      // Total bolus includes correction units too - both are Novorapid injections, not
+      // just meal-time doses. totalCorrection below still shows the correction-only slice.
+      totalBolus: (todayBoluses.reduce((s,b) => s + b.units, 0) + todayCorrections.reduce((s,c) => s + c.units, 0)).toFixed(1),
       totalCarbs: todayBoluses.reduce((s,b) => s + (b.carbs||0), 0),
       bolusCount: todayBoluses.length,
       totalCorrection: todayCorrections.reduce((s,c) => s + c.units, 0).toFixed(1),

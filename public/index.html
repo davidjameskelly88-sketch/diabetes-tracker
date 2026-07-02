@@ -16,7 +16,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .stat-label{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:4px}
 .stat-val{font-size:24px;font-weight:700}.stat-val .u{font-size:13px;font-weight:400;color:var(--dim);margin-left:2px}
 .blue{color:var(--blue)}
-.glucose{background:var(--card);border-radius:var(--r);padding:20px;border:2px solid var(--border);margin-bottom:12px;text-align:center;transition:border-color .3s}
+.glucose{position:relative;background:var(--card);border-radius:var(--r);padding:20px;border:2px solid var(--border);margin-bottom:12px;text-align:center;transition:border-color .3s}
+.g-delta{position:absolute;top:10px;right:12px;font-size:11px;font-weight:600;color:var(--dim);background:var(--bg);padding:3px 8px;border-radius:8px}
 .glucose.ok{border-color:var(--green)}.glucose.high{border-color:var(--orange)}.glucose.low{border-color:var(--red)}
 .g-val{font-size:48px;font-weight:800;line-height:1.1;display:flex;align-items:baseline;justify-content:center;gap:6px}
 .g-val .u{font-size:16px;font-weight:400;color:var(--dim)}.g-trend{font-size:32px;margin-left:4px}
@@ -267,7 +268,8 @@ async function fetchGlucose(){
   try{const d=await api('/api/glucose');if(d.error){card.className='glucose';disp.innerHTML=`<div style="color:var(--dim);font-size:13px;padding:10px 0">${d.error}</div>`;return}
   let cls='ok',col='#16a34a';if(d.value<settings.targetLow){cls='low';col='#dc2626'}else if(d.value>settings.targetHigh){cls='high';col='#ea580c'}
   card.className=`glucose ${cls}`;
-  disp.innerHTML=`<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend||''}</span><span class="u">mmol/L</span></div><div class="g-meta">${d.trendLabel||''} · ${timeAgo(new Date(d.timestamp||d.fetchedAt).getTime())}</div>`}catch(e){card.className='glucose';disp.innerHTML='<div style="color:var(--dim);font-size:13px">Could not connect</div>'}
+  const deltaHtml=d.delta!=null?`<div class="g-delta">${d.delta>0?'+':''}${d.delta} (${d.deltaMinutes}m)</div>`:'';
+  disp.innerHTML=`${deltaHtml}<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend||''}</span><span class="u">mmol/L</span></div><div class="g-meta">${d.trendLabel||''} · ${timeAgo(new Date(d.timestamp||d.fetchedAt).getTime())}</div>`}catch(e){card.className='glucose';disp.innerHTML='<div style="color:var(--dim);font-size:13px">Could not connect</div>'}
 }
 
 async function loadChart(){
@@ -486,7 +488,7 @@ function updateBolusBtn(){
   btn.textContent=(u>0)?'＋ Log bolus':'＋ Log carbs (no insulin)';
 }
 
-function calcIOB(){const now=Date.now();let t=0;for(const b of boluses){const e=(now-b.time)/60000;t+=b.units*iobFraction(e)}return t}
+function calcIOB(){const now=Date.now();let t=0;for(const b of boluses){const e=(now-b.time)/60000;t+=b.units*iobFraction(e)}for(const c of corrections){const e=(now-c.time)/60000;t+=c.units*iobFraction(e)}return t}
 function timeAgo(ts){const d=Math.floor((Date.now()-ts)/60000);if(d<1)return'just now';if(d<60)return d+'m ago';const h=Math.floor(d/60),m=d%60;if(h<24)return h+'h '+m+'m ago';return Math.floor(h/24)+'d ago'}
 function fmtTime(ts){return new Date(ts).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'})}
 

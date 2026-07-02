@@ -57,6 +57,7 @@ Single shared `APP_PASSWORD` (no user accounts). `requireAuth` middleware in `se
 - `login()` — authenticates, handles the "Terms of Use" re-acceptance redirect flow, caches `authToken`/`tokenExpiry` (50 min).
 - `fetchGlucose()` — cached per `POLL_MS` (5 min, intentionally matched to the official app's poll rate to avoid account restrictions — do not lower this); on a genuinely new reading (>3 min since last stored point) appends to `glucoseHistory` and triggers `resolveCorrections()`. Uses `FactoryTimestamp` (UTC) rather than `Timestamp` (unmarked local time — drifts during BST) for the reading's timestamp.
 - `computeTrend()` derives the rising/falling arrow from the delta between the last two stored `glucoseHistory` points (mmol/L per minute, bucketed), overriding LibreLinkUp's own `TrendArrow` — this is more responsive than the API's arrow without polling more often. Falls back to the API's arrow when there's no usable prior point (cold start or a >20min gap).
+- `fetchGlucose()` also exposes the raw (non-bucketed) `delta`/`deltaMinutes` between those same two points on the `/api/glucose` response — shown as a small corner note on the frontend's glucose card (e.g. "+0.3 (5m)"). `null` if there's no prior point or the gap exceeds 20min, same guard as `computeTrend()`.
 - Server polls glucose automatically via `setInterval` at startup — this happens independent of any HTTP request.
 
 ### Correction-resolution flow (the core domain logic)
@@ -85,7 +86,7 @@ Each entry type also has a `PATCH /api/entries/<kind>/:id` for in-place edits. E
 
 ### Carbs on board (COB) and insulin on board (IOB)
 
-Both are computed client-side in `public/index.html`, decaying independently per bolus entry (`iobFraction()` / `cobFraction()`), summed across all boluses in `calcIOB()`/`calcCOB()`. IOB uses the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. COB uses a simpler linear absorption model over `COB_DURATION = 180` minutes (carb absorption varies far more by food type than insulin action does, so a tuned curve isn't worth it here — linear is the standard pragmatic default).
+Both are computed client-side in `public/index.html`, decaying independently per entry (`iobFraction()` / `cobFraction()`). `calcIOB()` sums over both `boluses` *and* `corrections` (a correction is still an insulin injection); `calcCOB()` only sums `boluses`, since corrections don't carry carbs. IOB uses the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. COB uses a simpler linear absorption model over `COB_DURATION = 180` minutes (carb absorption varies far more by food type than insulin action does, so a tuned curve isn't worth it here — linear is the standard pragmatic default).
 
 ### Settings (target range, insulin:carb ratio, body profile)
 
