@@ -1,0 +1,10 @@
+{
+  "install": {
+    "include": ["^package\\.json$"]
+  },
+  "restart": {
+    "exclude": ["^\\.data/", "^data\\.json$"],
+    "include": ["^server\\.js$", "^public/"]
+  },
+  "throttle": 100
+}
