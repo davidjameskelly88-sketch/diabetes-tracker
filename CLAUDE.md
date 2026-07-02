@@ -99,6 +99,10 @@ Both are computed client-side in `public/index.html`, decaying independently per
 
 `public/index.html` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`.
 
-### External integration: Apple Shortcuts
+### External integration: Apple Health
 
-`POST /api/health` accepts JSON with `workouts[]` and/or a daily `summary` object; this is the target of an Apple Shortcuts automation described in `README.md` that reads Health data and posts it hourly. Workout dedup is by matching `startTime`; the daily summary upserts (one record per calendar day).
+`POST /api/health` accepts two different payload shapes and auto-detects which one it got:
+- **Health Auto Export** (recommended, see `README.md`) sends `{ data: { metrics: [{name, units, data:[{date, qty|Avg/Min/Max, ...}]}], workouts: [...] } }`. Energy values are in **kJ** and get converted to kcal (`kJtoKcal()`). Daily metrics (`active_energy`, `apple_exercise_time`, `apple_stand_hour`, `step_count`, `resting_heart_rate`) are iterated per-day and upserted via `upsertDailySummary()`, which merges into whichever `daily_summary` activity matches that calendar day rather than assuming everything is "today" — a single export/automation run can carry multiple days. Workouts carry `avgHeartRate`/`maxHeartRate` (stored, surfaced in the Activity tab and in the post-exercise insight text), but per-minute time series (`heartRateData`, `heartRateRecovery`, etc.) are deliberately *not* stored — a single export can be hundreds of KB and only the summary stats are useful here.
+- **Legacy Apple Shortcuts** format `{ summary: {...}, workouts: [{startTime, endTime, ...}] }` is still supported for anyone not using Health Auto Export.
+
+Workout dedup in both paths is by matching the stored `startTime` field (`w.start` for Health Auto Export, `w.startTime` for Shortcuts) against existing `activities`.

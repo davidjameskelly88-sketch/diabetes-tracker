@@ -286,8 +286,9 @@ async function analysePatterns() {
       const postMean = post.reduce((s,r) => s+r.value, 0) / post.length;
       const delta = postMean - preMean;
       if (Math.abs(delta) > 0.5) {
+        const hr = w.avgHeartRate ? ` (avg HR ${w.avgHeartRate}bpm${w.maxHeartRate?', max '+w.maxHeartRate:''})` : '';
         insights.push({ type: delta < 0 ? 'positive' : 'warning',
-          text: `After "${w.workoutType||'exercise'}" (${w.duration||'?'}min), glucose ${delta<0?'dropped':'rose'} by ${Math.abs(delta).toFixed(1)} mmol/L over ~2.5h.`, time: w.endTime });
+          text: `After "${w.workoutType||'exercise'}" (${w.duration||'?'}min)${hr}, glucose ${delta<0?'dropped':'rose'} by ${Math.abs(delta).toFixed(1)} mmol/L over ~2.5h.`, time: w.endTime });
       }
     }
   }
@@ -645,25 +646,75 @@ app.post('/api/settings',requireAuth,async(req,res)=>{
 });
 
 // Health / Activity
+// Upserts a daily_summary activity for the given calendar day (identified by any timestamp
+// that falls on it), merging in whichever fields are provided and keeping existing ones.
+function upsertDailySummary(data, dayTs, patch) {
+  const dayKey = new Date(dayTs).toDateString();
+  const idx = data.activities.findIndex(a => a.type === 'daily_summary' && new Date(a.time).toDateString() === dayKey);
+  const existing = idx >= 0 ? data.activities[idx] : null;
+  const s = {
+    id: existing ? existing.id : Date.now() + Math.random(),
+    type: 'daily_summary',
+    time: existing ? existing.time : dayTs,
+    activeCalories: patch.activeCalories ?? existing?.activeCalories ?? 0,
+    exerciseMinutes: patch.exerciseMinutes ?? existing?.exerciseMinutes ?? 0,
+    standHours: patch.standHours ?? existing?.standHours ?? 0,
+    steps: patch.steps ?? existing?.steps ?? 0,
+    restingHeartRate: patch.restingHeartRate ?? existing?.restingHeartRate ?? null,
+    walkingDistance: patch.walkingDistance ?? existing?.walkingDistance ?? null,
+  };
+  if (idx >= 0) data.activities[idx] = s; else data.activities.unshift(s);
+}
+
 app.post('/api/health',requireAuth,async(req,res)=>{
-  const{workouts,summary}=req.body;const data=await loadData();
-  if(workouts&&Array.isArray(workouts)){
-    for(const w of workouts){
-      if(!data.activities.some(a=>a.type==='workout'&&a.startTime===w.startTime)){
-        data.activities.unshift({id:Date.now()+Math.random(),type:'workout',time:Date.now(),
-          workoutType:w.workoutType||'Exercise',duration:w.duration||null,calories:w.calories||null,
-          startTime:w.startTime,endTime:w.endTime,distance:w.distance||null,avgHeartRate:w.avgHeartRate||null});
+  const data=await loadData();
+  const kJtoKcal=kj=>kj/4.184;
+
+  if (req.body.data && (req.body.data.metrics || req.body.data.workouts)) {
+    // Health Auto Export REST API format: { data: { metrics: [{name, units, data:[{date,qty|Avg/Min/Max}]}], workouts: [...] } }
+    const metrics = req.body.data.metrics || [];
+    const byName = n => metrics.find(m => m.name === n);
+    const forEachDay = (name, fn) => { const m = byName(name); if (m) m.data.forEach(d => { const t = new Date(d.date).getTime(); if (!isNaN(t)) fn(t, d); }); };
+
+    forEachDay('active_energy', (t,d) => upsertDailySummary(data, t, { activeCalories: kJtoKcal(d.qty) }));
+    forEachDay('apple_exercise_time', (t,d) => upsertDailySummary(data, t, { exerciseMinutes: d.qty }));
+    forEachDay('apple_stand_hour', (t,d) => upsertDailySummary(data, t, { standHours: d.qty }));
+    forEachDay('step_count', (t,d) => upsertDailySummary(data, t, { steps: d.qty }));
+    forEachDay('resting_heart_rate', (t,d) => upsertDailySummary(data, t, { restingHeartRate: Math.round(d.qty) }));
+
+    for (const w of (req.body.data.workouts || [])) {
+      if (!w.start || data.activities.some(a => a.type === 'workout' && a.startTime === w.start)) continue;
+      data.activities.unshift({
+        id: Date.now() + Math.random(), type: 'workout', time: Date.now(),
+        workoutType: w.name || 'Exercise',
+        duration: w.duration ? w.duration / 60 : null, // seconds -> minutes
+        calories: w.activeEnergyBurned ? kJtoKcal(w.activeEnergyBurned.qty) : null,
+        startTime: w.start, endTime: w.end, distance: null,
+        avgHeartRate: w.avgHeartRate ? Math.round(w.avgHeartRate.qty) : null,
+        maxHeartRate: w.maxHeartRate ? Math.round(w.maxHeartRate.qty) : null,
+      });
+    }
+  } else {
+    // Legacy Apple Shortcuts format: { summary: {...}, workouts: [{startTime,endTime,...}] }
+    const{workouts,summary}=req.body;
+    if(workouts&&Array.isArray(workouts)){
+      for(const w of workouts){
+        if(!data.activities.some(a=>a.type==='workout'&&a.startTime===w.startTime)){
+          data.activities.unshift({id:Date.now()+Math.random(),type:'workout',time:Date.now(),
+            workoutType:w.workoutType||'Exercise',duration:w.duration||null,calories:w.calories||null,
+            startTime:w.startTime,endTime:w.endTime,distance:w.distance||null,avgHeartRate:w.avgHeartRate||null});
+        }
       }
     }
+    if(summary){
+      upsertDailySummary(data, Date.now(), {
+        activeCalories: summary.activeCalories || 0, exerciseMinutes: summary.exerciseMinutes || 0,
+        standHours: summary.standHours || 0, steps: summary.steps || 0,
+        restingHeartRate: summary.restingHeartRate || null, walkingDistance: summary.walkingDistance || null,
+      });
+    }
   }
-  if(summary){
-    const today=new Date().toDateString();
-    const idx=data.activities.findIndex(a=>a.type==='daily_summary'&&new Date(a.time).toDateString()===today);
-    const s={id:Date.now(),type:'daily_summary',time:Date.now(),activeCalories:summary.activeCalories||0,
-      exerciseMinutes:summary.exerciseMinutes||0,standHours:summary.standHours||0,steps:summary.steps||0,
-      restingHeartRate:summary.restingHeartRate||null,walkingDistance:summary.walkingDistance||null};
-    if(idx>=0)data.activities[idx]=s;else data.activities.unshift(s);
-  }
+
   const cutoff=Date.now()-30*24*60*60*1000;
   data.activities=data.activities.filter(a=>a.time>cutoff);
   await saveData(data);res.json({ok:true});

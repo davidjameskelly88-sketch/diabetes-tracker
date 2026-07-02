@@ -78,12 +78,43 @@ warm for your hourly Apple Shortcuts sync.
 
 ---
 
-## Apple Health Integration (Apple Shortcuts)
+## Apple Health Integration (Health Auto Export — recommended)
 
-This syncs your Apple Watch/Health activity data to the tracker. No extra
-apps needed — just the built-in Shortcuts app on your iPhone.
+[Health Auto Export](https://apps.apple.com/app/health-auto-export/id1115567069)
+is a paid App Store app (subscription for automated exports) that syncs much
+richer Apple Watch/Health data than the Shortcuts method below — including
+heart rate during workouts, not just duration/calories — and, unlike a
+Shortcuts automation, shows you a log of each export attempt so a failure is
+visible instead of silent.
 
-### Create the Shortcut
+1. Install **Health Auto Export** from the App Store and grant it Health
+   access for at least: Active Energy, Apple Exercise Time, Apple Stand Hour,
+   Step Count, Resting Heart Rate, Heart Rate, and Workouts.
+2. In the app, create a new **Automation** using the **REST API** export
+   type:
+   - URL: `https://your-app-url/api/health`
+   - Method: POST
+   - Header: `Authorization: Bearer YOUR_APP_PASSWORD`
+   - Format: JSON
+   - Aggregation: Daily (per-workout data is sent separately either way)
+   - Schedule: as often as you like (e.g. hourly) — the app tracks what's
+     already been sent, so you don't need to worry about duplicates
+3. Include the metrics above plus **Workouts** in the automation's data
+   selection, then enable it.
+
+The server auto-detects this payload format (it's structurally different
+from the old Shortcuts JSON) so no other setup is needed — `POST /api/health`
+handles both.
+
+### Legacy: Apple Shortcuts (free, but less reliable and less data)
+
+This syncs basic activity totals using just the built-in Shortcuts app — no
+extra app or subscription needed, but only duration/calories per workout (no
+heart rate), and Shortcuts automations can fail silently with no way to tell
+they've stopped running, which is what motivated the Health Auto Export path
+above. Keep reading if you'd rather not use a third-party app.
+
+#### Create the Shortcut
 
 1. Open **Shortcuts** app on your iPhone
 2. Tap **+** to create a new shortcut
@@ -162,7 +193,7 @@ below if you get stuck.
   - Headers: Authorization = Bearer YOUR_APP_PASSWORD
   - Request Body: JSON (paste the text from Step 3)
 
-### Simplified version (if the above is too fiddly)
+#### Simplified version (if the above is too fiddly)
 
 Create a shortcut that just sends daily summary data (skip workouts):
 
@@ -175,7 +206,7 @@ Create a shortcut that just sends daily summary data (skip workouts):
    - Request Body: JSON
    - Body: {"summary":{"activeCalories":[cal],"steps":[steps],"exerciseMinutes":0,"standHours":0}}
 
-### Automate it
+#### Automate it
 
 - Open Shortcuts → Automations tab → + New Automation
 - Choose "Time of Day" → set to every hour (or whenever you want)
@@ -191,15 +222,27 @@ You can also add it to your home screen for one-tap manual syncing.
 The app automatically detects patterns in your data:
 
 - **Post-exercise glucose impact**: How much your glucose drops/rises after
-  different types of exercise
+  different types of exercise (including average heart rate, if you're on
+  Health Auto Export)
 - **Exercise vs rest day comparison**: Average glucose on days you exercise
   vs days you don't
 - **Bolus sensitivity**: Whether insulin is more effective on exercise days
 - **Time-of-day patterns**: Which hours tend to be highest/lowest
-- **Time in range**: Percentage of readings between 4.0–10.0 mmol/L
+- **Time in range**: Percentage of readings within your target range (set in
+  the app's Settings tab — defaults to 4.0–10.0 mmol/L)
 
 The more data you log, the better the patterns get. Give it a few days of
 consistent logging for meaningful results.
+
+## Other features
+
+- **Carbs/insulin on board**: shown on the Track tab, using an exponential
+  insulin-action curve and a linear carb-absorption curve.
+- **Backdated logging & editing**: log a dose or meal for a past moment
+  (not just "now"), and edit any entry after the fact.
+- **Meal dose suggestions**: learns your insulin:carb ratio from history, or
+  falls back to a manually-set ratio (Settings tab) until it has enough data.
+- **CSV export**: download everything you've logged from the Settings tab.
 
 ---
 

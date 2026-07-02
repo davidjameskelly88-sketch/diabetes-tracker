@@ -175,6 +175,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="ring-item"><div class="val" id="aExMin">—</div><div class="lbl">Exercise min</div></div>
     <div class="ring-item"><div class="val" id="aStand">—</div><div class="lbl">Stand hrs</div></div>
     <div class="ring-item"><div class="val" id="aSteps">—</div><div class="lbl">Steps</div></div>
+    <div class="ring-item"><div class="val" id="aRHR">—</div><div class="lbl">Resting HR</div></div>
   </div>
 </div>
 <div class="card"><div class="card-title">Recent Workouts</div><div id="workoutList"><div class="empty">No workouts synced yet</div></div></div>
@@ -266,9 +267,13 @@ async function loadActivities(){
   document.getElementById('aExMin').textContent=s?Math.round(s.exerciseMinutes):'—';
   document.getElementById('aStand').textContent=s?Math.round(s.standHours):'—';
   document.getElementById('aSteps').textContent=s?s.steps.toLocaleString():'—';
+  document.getElementById('aRHR').textContent=s&&s.restingHeartRate?s.restingHeartRate:'—';
   const wk=acts.filter(a=>a.type==='workout').slice(0,10);const wl=document.getElementById('workoutList');
   if(!wk.length){wl.innerHTML='<div class="empty">No workouts synced yet</div>';return}
-  wl.innerHTML=wk.map(w=>`<div class="workout"><div class="w-icon">🏋️</div><div class="w-info"><div class="w-name">${w.workoutType||'Exercise'}</div><div class="w-detail">${w.duration?Math.round(w.duration)+'min ':''} ${w.calories?'· '+Math.round(w.calories)+' kcal ':''}<br>${fmtTime(new Date(w.startTime).getTime())}</div></div></div>`).join('')}catch(e){}
+  wl.innerHTML=wk.map(w=>{
+    const hr=w.avgHeartRate?` · ❤️ ${w.avgHeartRate}bpm${w.maxHeartRate?' (max '+w.maxHeartRate+')':''}`:'';
+    return `<div class="workout"><div class="w-icon">🏋️</div><div class="w-info"><div class="w-name">${w.workoutType||'Exercise'}</div><div class="w-detail">${w.duration?Math.round(w.duration)+'min ':''} ${w.calories?'· '+Math.round(w.calories)+' kcal ':''}${hr}<br>${fmtTime(new Date(w.startTime).getTime())}</div></div></div>`
+  }).join('')}catch(e){}
 }
 
 async function loadInsights(){try{const ins=await api('/api/insights');document.getElementById('insightsList').innerHTML=ins.map(i=>`<div class="insight ${i.type}">${i.text}</div>`).join('')}catch(e){}}
