@@ -78,7 +78,7 @@ When a user logs an insulin "correction" dose (`POST /api/entries/correction`), 
 
 ### Frontend
 
-`public/index.html` polls the backend directly (no client-side router/state library). Insulin-on-board is computed client-side in `calcIOB()` using a simple linear decay over `BD = 240` minutes (4h, tuned for Novorapid). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`.
+`public/index.html` polls the backend directly (no client-side router/state library). Insulin-on-board is computed client-side in `calcIOB()` using the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`.
 
 ### External integration: Apple Shortcuts
 

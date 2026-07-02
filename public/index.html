@@ -167,11 +167,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div class="card"><div class="card-title">📊 Today's Summary</div><div id="dailySummary"><div class="empty">Loading…</div></div></div>
 </div>
 
-<p class="footer">IOB: linear decay over 4h. Correction factor: auto-calculated from your history.<br>Not medical software — personal tracking only.</p>
+<p class="footer">IOB: exponential model, peak ~75min, 4h duration. Correction factor: auto-calculated from your history.<br>Not medical software — personal tracking only.</p>
 </div>
 
 <script>
-const BD=240;let boluses=[],basalDoses=[],corrections=[],chartHours=6;
+let boluses=[],basalDoses=[],corrections=[],chartHours=6;
+
+// Exponential insulin-action model (Loop/OpenAPS style) for Novorapid: peak activity at
+// IOB_PEAK minutes, fully absorbed by IOB_DIA minutes. Replaces a naive linear decay, which
+// wrongly treats insulin as 100% "active" the instant it's injected instead of ramping up.
+const IOB_PEAK=75, IOB_DIA=240;
+const _iobTau=IOB_PEAK*(1-IOB_PEAK/IOB_DIA)/(1-2*IOB_PEAK/IOB_DIA);
+const _iobA=2*_iobTau/IOB_DIA;
+const _iobS=1/(1-_iobA+(1+_iobA)*Math.exp(-IOB_DIA/_iobTau));
+function iobFraction(t){ // t = minutes since bolus; returns fraction of the dose still on board
+  if(t<=0)return 1;
+  if(t>=IOB_DIA)return 0;
+  return 1-_iobS*(1-_iobA)*((t*t/(_iobTau*IOB_DIA*(1-_iobA))-t/_iobTau-1)*Math.exp(-t/_iobTau)+1);
+}
 
 async function checkAuth(){try{const r=await fetch('/api/auth-check');if(r.ok){showApp();return}}catch(e){}document.getElementById('loginPage').style.display='flex'}
 async function doLogin(){const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pwInput').value})});if(r.ok)showApp();else document.getElementById('loginErr').style.display='block'}
@@ -284,7 +297,7 @@ function updateBolusBtn(){
   btn.textContent=(u>0)?'＋ Log bolus':'＋ Log carbs (no insulin)';
 }
 
-function calcIOB(){const now=Date.now();let t=0;for(const b of boluses){const e=(now-b.time)/60000;if(e<0){t+=b.units;continue}if(e>=BD)continue;t+=b.units*(1-e/BD)}return t}
+function calcIOB(){const now=Date.now();let t=0;for(const b of boluses){const e=(now-b.time)/60000;t+=b.units*iobFraction(e)}return t}
 function timeAgo(ts){const d=Math.floor((Date.now()-ts)/60000);if(d<1)return'just now';if(d<60)return d+'m ago';const h=Math.floor(d/60),m=d%60;if(h<24)return h+'h '+m+'m ago';return Math.floor(h/24)+'d ago'}
 function fmtTime(ts){return new Date(ts).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'})}
 
