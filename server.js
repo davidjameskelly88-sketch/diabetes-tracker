@@ -818,6 +818,50 @@ app.post('/api/health',requireAuth,async(req,res)=>{
 
 app.get('/api/activities',requireAuth,async(req,res)=>{res.json((await loadData()).activities||[])});
 
+// Manual workout logging - a fallback since Apple's free Shortcuts actions can't actually
+// query Workout objects from HealthKit (only quantity samples like heart rate/steps), so
+// automated workout sync requires a paid third-party Shortcuts action.
+app.post('/api/activities/workout',requireAuth,async(req,res)=>{
+  const{workoutType,duration,calories,time}=req.body;
+  if(!workoutType)return res.status(400).json({error:'Workout type required'});
+  const data=await loadData();
+  const startTs=resolveEntryTime(time);
+  const durMin=duration?parseFloat(duration):null;
+  const entry={
+    id:Date.now()+Math.random(), type:'workout', time:startTs,
+    workoutType, duration:durMin, calories:calories?parseFloat(calories):null,
+    startTime:new Date(startTs).toISOString(),
+    endTime:new Date(startTs+(durMin||0)*60000).toISOString(),
+    distance:null, avgHeartRate:null, maxHeartRate:null, manual:true,
+  };
+  data.activities.unshift(entry);
+  const cutoff=Date.now()-30*24*60*60*1000;
+  data.activities=data.activities.filter(a=>a.time>cutoff);
+  await saveData(data);res.json(entry);
+});
+
+app.patch('/api/activities/workout/:id',requireAuth,async(req,res)=>{
+  const{workoutType,duration,calories,time}=req.body;
+  const data=await loadData();
+  const entry=data.activities.find(a=>a.type==='workout'&&String(a.id)===req.params.id);
+  if(!entry)return res.status(404).json({error:'Not found'});
+  if(workoutType)entry.workoutType=workoutType;
+  if(duration!==undefined)entry.duration=(duration===''||duration==null)?null:parseFloat(duration);
+  if(calories!==undefined)entry.calories=(calories===''||calories==null)?null:parseFloat(calories);
+  if(time){
+    const newTs=resolveEntryTime(time);
+    entry.time=newTs;entry.startTime=new Date(newTs).toISOString();
+    entry.endTime=new Date(newTs+(entry.duration||0)*60000).toISOString();
+  }
+  await saveData(data);res.json(entry);
+});
+
+app.delete('/api/activities/workout/:id',requireAuth,async(req,res)=>{
+  const data=await loadData();
+  data.activities=data.activities.filter(a=>!(a.type==='workout'&&String(a.id)===req.params.id));
+  await saveData(data);res.json({ok:true});
+});
+
 app.get('/api/glucose-history',requireAuth,async(req,res)=>{
   const data=await loadData();
   const hours=parseInt(req.query.hours)||24;

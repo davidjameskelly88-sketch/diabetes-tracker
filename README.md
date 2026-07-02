@@ -151,12 +151,15 @@ above. Keep reading if you'd rather not use a third-party app.
   - Limit: 1
 - Add action: "Set Variable" → name it `steps`
 
-**Step 2: Get recent workouts**
-- Add action: "Find Health Samples"
-  - Type: Workouts
-  - Starting Date: Last 24 Hours
-  - Sort by: Most Recent First
-  - Limit: 5
+**Step 2 (skip this): workouts aren't available here**
+Apple's free "Find Health Samples" action cannot query Workout objects at
+all — only quantity/category samples like heart rate or steps. This isn't
+a setup mistake, it's a real limitation of the built-in Shortcuts actions.
+Getting workouts automatically into a Shortcut requires a paid third-party
+action like [Toolbox Pro](https://apps.apple.com/us/app/toolbox-pro-for-shortcuts/id1476205977)'s
+"Get Workouts" (~$6 one-time unlock). Until/unless you add that, use the
+tracker's own **"Log a workout"** form on the Activity tab instead — it's
+a manual fallback for exactly this gap.
 
 **Step 3: Build the JSON payload**
 - Add action: "Text"
@@ -169,22 +172,13 @@ above. Keep reading if you'd rather not use a third-party app.
     "exerciseMinutes": [exerciseMinutes],
     "standHours": [standHours],
     "steps": [steps]
-  },
-  "workouts": [
-    {
-      "workoutType": "[Workout Type]",
-      "duration": [Duration in Minutes],
-      "calories": [Active Calories],
-      "startTime": "[Start Date]",
-      "endTime": "[End Date]"
-    }
-  ]
+  }
 }
 ```
 
-Note: The workout section needs a "Repeat with Each" loop around the
-workouts from Step 2. This can be fiddly — see the simplified version
-below if you get stuck.
+If you do add Toolbox Pro's "Get Workouts" action, you can extend this
+with a `"workouts"` array (one object per workout, via a "Repeat with
+Each" loop) matching the shape: `{"workoutType","duration","calories","startTime","endTime"}`.
 
 **Step 4: Send to your tracker**
 - Add action: "Get Contents of URL"
@@ -215,6 +209,16 @@ Create a shortcut that just sends daily summary data (skip workouts):
 
 You can also add it to your home screen for one-tap manual syncing.
 
+**Reliability note:** "Time of Day" personal automations are known to
+silently stop firing in the background on some devices/iOS versions, with
+no error or indication anything's wrong — you just get no data. If syncing
+seems to have stopped, try opening the Shortcuts app itself (reportedly
+"wakes" the automation scheduler), and check Settings → Battery → Low
+Power Mode and Settings → General → Background App Refresh are both
+allowing Shortcuts to run. If it's still unreliable, manually tapping the
+shortcut (e.g. right before opening the tracker) is the one path that's
+actually guaranteed to work.
+
 ---
 
 ## Pattern Analysis
@@ -242,6 +246,13 @@ consistent logging for meaningful results.
   (not just "now"), and edit any entry after the fact.
 - **Meal dose suggestions**: learns your insulin:carb ratio from history, or
   falls back to a manually-set ratio (Settings tab) until it has enough data.
+- **Insulin Health Check** (Insights tab): Total Daily Dose, dose per kg
+  body weight, bolus/basal split, and week-over-week trend notes. Set your
+  height/weight/sex/body fat % in Settings for the body-weight-normalized
+  figures — body fat % and sex are stored as context only, never used in
+  any calculation.
+- **Manual workout logging** (Activity tab): a fallback for when automated
+  workout sync isn't set up (see the Apple Health section above).
 - **CSV export**: download everything you've logged from the Settings tab.
 
 ---

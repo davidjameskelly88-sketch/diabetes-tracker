@@ -179,6 +179,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="ring-item"><div class="val" id="aRHR">—</div><div class="lbl">Resting HR</div></div>
   </div>
 </div>
+<div class="card">
+  <div class="card-title">🏋️ Log a workout</div>
+  <div class="input-row">
+    <div class="ig"><label>Type</label><input type="text" id="workoutTypeIn" placeholder="e.g. Running"></div>
+    <div class="ig"><label>Duration (min)</label><input type="number" inputmode="decimal" id="workoutDurIn"></div>
+  </div>
+  <div class="ig" style="margin-bottom:12px"><label>Calories (optional)</label><input type="number" inputmode="decimal" id="workoutCalIn"></div>
+  <button class="backdate-toggle" id="workoutTimeToggle" type="button">🕐 Backdate</button>
+  <input type="datetime-local" id="workoutTimeIn" class="backdate-input">
+  <button class="btn btn-blue" id="addWorkoutBtn" disabled onclick="addWorkout()">＋ Log workout</button>
+</div>
 <div class="card"><div class="card-title">Recent Workouts</div><div id="workoutList"><div class="empty">No workouts synced yet</div></div></div>
 </div>
 
@@ -288,7 +299,9 @@ async function loadActivities(){
   if(!wk.length){wl.innerHTML='<div class="empty">No workouts synced yet</div>';return}
   wl.innerHTML=wk.map(w=>{
     const hr=w.avgHeartRate?` · ❤️ ${w.avgHeartRate}bpm${w.maxHeartRate?' (max '+w.maxHeartRate+')':''}`:'';
-    return `<div class="workout"><div class="w-icon">🏋️</div><div class="w-info"><div class="w-name">${w.workoutType||'Exercise'}</div><div class="w-detail">${w.duration?Math.round(w.duration)+'min ':''} ${w.calories?'· '+Math.round(w.calories)+' kcal ':''}${hr}<br>${fmtTime(new Date(w.startTime).getTime())}</div></div></div>`
+    const manual=w.manual?' <span class="sub">· manual</span>':'';
+    const del=w.manual?`<button class="log-del" onclick="delWorkout('${w.id}')">✕</button>`:'';
+    return `<div class="workout"><div class="w-icon">🏋️</div><div class="w-info"><div class="w-name">${w.workoutType||'Exercise'}${manual}</div><div class="w-detail">${w.duration?Math.round(w.duration)+'min ':''} ${w.calories?'· '+Math.round(w.calories)+' kcal ':''}${hr}<br>${fmtTime(new Date(w.startTime).getTime())}</div></div>${del}</div>`
   }).join('')}catch(e){}
 }
 
@@ -396,11 +409,28 @@ function setupBackdate(toggleId,inputId){
 setupBackdate('bolusTimeToggle','bolusTimeIn');
 setupBackdate('basalTimeToggle','basalTimeIn');
 setupBackdate('corrTimeToggle','corrTimeIn');
+setupBackdate('workoutTimeToggle','workoutTimeIn');
+document.getElementById('workoutTypeIn').addEventListener('input',function(){document.getElementById('addWorkoutBtn').disabled=!this.value.trim()});
 
 async function addBolus(){const u=parseFloat(document.getElementById('bolusIn').value),c=parseFloat(document.getElementById('carbIn').value);if(!(u>0)&&!(c>0))return;await api('/api/entries/bolus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u>0?u:0,carbs:c>0?c:null,time:getEntryTime('bolusTimeIn')})});document.getElementById('bolusIn').value='';document.getElementById('carbIn').value='';document.getElementById('mealSuggestion').innerHTML='';document.querySelectorAll('.qc button').forEach(b=>b.classList.remove('on'));resetBackdate('bolusTimeToggle','bolusTimeIn');updateBolusBtn();fetchEntries();loadChart()}
 async function addBasal(){const u=parseFloat(document.getElementById('basalIn').value);if(!u||u<=0)return;await api('/api/entries/basal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u,time:getEntryTime('basalTimeIn')})});document.getElementById('basalIn').value='';document.getElementById('basalForm').classList.remove('vis');document.getElementById('basalToggle').textContent='Add';resetBackdate('basalTimeToggle','basalTimeIn');fetchEntries()}
 async function addCorrection(){const u=parseFloat(document.getElementById('corrUnitsIn').value),t=parseFloat(document.getElementById('corrTargetIn').value);if(!u||u<=0)return;await api('/api/entries/correction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u,predictedGlucose:isNaN(t)?null:t,time:getEntryTime('corrTimeIn')})});document.getElementById('corrUnitsIn').value='';document.getElementById('corrTargetIn').value='';document.getElementById('addCorrBtn').disabled=true;document.getElementById('corrSuggestion').innerHTML='';resetBackdate('corrTimeToggle','corrTimeIn');fetchEntries();loadChart()}
 async function delEntry(t,id){await api(`/api/entries/${t}/${id}`,{method:'DELETE'});fetchEntries();loadChart()}
+
+async function addWorkout(){
+  const type=document.getElementById('workoutTypeIn').value.trim();
+  if(!type)return;
+  const dur=parseFloat(document.getElementById('workoutDurIn').value);
+  const cal=parseFloat(document.getElementById('workoutCalIn').value);
+  await api('/api/activities/workout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    workoutType:type,duration:isNaN(dur)?null:dur,calories:isNaN(cal)?null:cal,time:getEntryTime('workoutTimeIn'),
+  })});
+  document.getElementById('workoutTypeIn').value='';document.getElementById('workoutDurIn').value='';document.getElementById('workoutCalIn').value='';
+  document.getElementById('addWorkoutBtn').disabled=true;
+  resetBackdate('workoutTimeToggle','workoutTimeIn');
+  loadActivities();
+}
+async function delWorkout(id){await api(`/api/activities/workout/${id}`,{method:'DELETE'});loadActivities()}
 
 function startEdit(kind,id){editingEntry={kind,id:String(id)};render()}
 function cancelEdit(){editingEntry=null;render()}
