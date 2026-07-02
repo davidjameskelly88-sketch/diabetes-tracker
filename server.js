@@ -38,7 +38,10 @@ if (!APP_PASSWORD || APP_PASSWORD === 'choose-a-password-here') {
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const UPSTASH_KEY = 'diabetes-tracker-data';
-const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, carbRatio: null }; // carbRatio = grams of carbs per 1 unit
+// carbRatio = grams of carbs per 1 unit. heightCm/weightKg/sex/bodyFatPct are stored for
+// context (BMI, dose-per-kg) only - never used to weight any suggestion or calculation,
+// since self-estimated body fat % in particular isn't precise enough to build logic on.
+const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, carbRatio: null, heightCm: null, weightKg: null, sex: null, bodyFatPct: null };
 const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS } });
 
 const DATA_DIR = fs.existsSync(path.join(__dirname, '.data'))
@@ -461,6 +464,78 @@ async function getDailySummary() {
   };
 }
 
+// ─── Insulin Health Check ──────────────────────────────────────────────
+// Standard clinical-style dose metrics (Total Daily Dose, TDD/kg, basal:bolus split, TIR),
+// trended over two rolling 7-day windows. heightCm/weightKg only normalize TDD into TDD/kg
+// and compute BMI; sex/bodyFatPct are surfaced as context but never weighted into anything -
+// self-estimated body fat % isn't precise enough to build calculations on.
+function periodStats(data, sinceMs, untilMs) {
+  const { targetLow, targetHigh } = data.settings;
+  const boluses = data.boluses.filter(b => b.time >= sinceMs && b.time < untilMs);
+  const corrections = data.corrections.filter(c => c.time >= sinceMs && c.time < untilMs);
+  const basalDoses = data.basalDoses.filter(b => b.time >= sinceMs && b.time < untilMs);
+  const glucose = data.glucoseHistory.filter(g => g.time >= sinceMs && g.time < untilMs);
+
+  const days = (untilMs - sinceMs) / 86400000;
+  const bolusUnits = boluses.reduce((s,b) => s + b.units, 0) + corrections.reduce((s,c) => s + c.units, 0);
+  const basalUnits = basalDoses.reduce((s,b) => s + b.units, 0);
+  const totalUnits = bolusUnits + basalUnits;
+
+  const inRange = glucose.filter(g => g.value >= targetLow && g.value <= targetHigh).length;
+
+  return {
+    tdd: totalUnits / days,
+    bolusShare: totalUnits > 0 ? bolusUnits / totalUnits : null,
+    tir: glucose.length ? (inRange / glucose.length) * 100 : null,
+    readingCount: glucose.length,
+  };
+}
+
+async function checkInsulinHealth() {
+  const data = await loadData();
+  const { heightCm, weightKg, sex, bodyFatPct } = data.settings;
+  const now = Date.now();
+  const thisWeek = periodStats(data, now - 7*86400000, now);
+  const lastWeek = periodStats(data, now - 14*86400000, now - 7*86400000);
+
+  if (thisWeek.readingCount < 20) {
+    return { available: false, message: 'Not enough recent data yet — keep logging for a few more days.' };
+  }
+
+  const notes = [];
+  if (lastWeek.readingCount >= 10) {
+    const tddDelta = thisWeek.tdd - lastWeek.tdd;
+    if (Math.abs(tddDelta) > 2) {
+      notes.push(`Total daily insulin dose ${tddDelta>0?'rose':'fell'} from ${lastWeek.tdd.toFixed(1)}u to ${thisWeek.tdd.toFixed(1)}u/day vs. the prior week.`);
+    }
+    if (thisWeek.tir != null && lastWeek.tir != null) {
+      const tirDelta = thisWeek.tir - lastWeek.tir;
+      if (Math.abs(tirDelta) >= 5) {
+        notes.push(`Time in range ${tirDelta>0?'improved':'dropped'} from ${lastWeek.tir.toFixed(0)}% to ${thisWeek.tir.toFixed(0)}% vs. the prior week.`);
+      }
+    }
+    if (thisWeek.bolusShare != null && lastWeek.bolusShare != null) {
+      const shareDeltaPct = (thisWeek.bolusShare - lastWeek.bolusShare) * 100;
+      if (Math.abs(shareDeltaPct) >= 8) {
+        notes.push(`Bolus/basal balance shifted — bolus is now ${Math.round(thisWeek.bolusShare*100)}% of total dose vs. ${Math.round(lastWeek.bolusShare*100)}% the prior week.`);
+      }
+    }
+  }
+
+  return {
+    available: true,
+    tdd: parseFloat(thisWeek.tdd.toFixed(1)),
+    tddPerKg: weightKg ? parseFloat((thisWeek.tdd / weightKg).toFixed(2)) : null,
+    bolusPct: thisWeek.bolusShare != null ? Math.round(thisWeek.bolusShare * 100) : null,
+    basalPct: thisWeek.bolusShare != null ? Math.round((1 - thisWeek.bolusShare) * 100) : null,
+    tir: thisWeek.tir != null ? Math.round(thisWeek.tir) : null,
+    bmi: (heightCm && weightKg) ? parseFloat((weightKg / ((heightCm/100)**2)).toFixed(1)) : null,
+    sex: sex || null,
+    bodyFatPct: bodyFatPct || null,
+    notes,
+  };
+}
+
 // ─── Express app ──────────────────────────────────────────────────────
 const app = express();
 app.use(express.json({limit:'1mb'}));
@@ -626,7 +701,7 @@ app.get('/api/settings',requireAuth,async(req,res)=>{
   res.json(data.settings);
 });
 app.post('/api/settings',requireAuth,async(req,res)=>{
-  const{targetLow,targetHigh,carbRatio}=req.body;
+  const{targetLow,targetHigh,carbRatio,heightCm,weightKg,sex,bodyFatPct}=req.body;
   const data=await loadData();
   if(targetLow!=null&&targetHigh!=null){
     const lo=parseFloat(targetLow),hi=parseFloat(targetHigh);
@@ -641,6 +716,20 @@ app.post('/api/settings',requireAuth,async(req,res)=>{
       data.settings.carbRatio=cr;
     }
   }
+  // Body profile - context only (BMI, dose-per-kg); never weighted into any suggestion.
+  if(heightCm!==undefined){
+    if(heightCm===null||heightCm===''){data.settings.heightCm=null}
+    else{const n=parseFloat(heightCm);if(isNaN(n)||n<=0||n>300)return res.status(400).json({error:'Invalid height'});data.settings.heightCm=n}
+  }
+  if(weightKg!==undefined){
+    if(weightKg===null||weightKg===''){data.settings.weightKg=null}
+    else{const n=parseFloat(weightKg);if(isNaN(n)||n<=0||n>500)return res.status(400).json({error:'Invalid weight'});data.settings.weightKg=n}
+  }
+  if(bodyFatPct!==undefined){
+    if(bodyFatPct===null||bodyFatPct===''){data.settings.bodyFatPct=null}
+    else{const n=parseFloat(bodyFatPct);if(isNaN(n)||n<=0||n>100)return res.status(400).json({error:'Invalid body fat %'});data.settings.bodyFatPct=n}
+  }
+  if(sex!==undefined)data.settings.sex=sex||null;
   await saveData(data);
   res.json(data.settings);
 });
@@ -737,6 +826,9 @@ app.get('/api/glucose-history',requireAuth,async(req,res)=>{
 });
 
 app.get('/api/daily-summary',requireAuth,async(req,res)=>{res.json(await getDailySummary())});
+app.get('/api/insulin-health',requireAuth,async(req,res)=>{
+  try{res.json(await checkInsulinHealth())}catch(e){res.json({available:false,message:'Could not compute insulin health check.'})}
+});
 app.get('/api/insights',requireAuth,async(req,res)=>{
   try{res.json(await analysePatterns())}catch(e){res.json([{type:'info',text:'Could not generate insights.'}])}
 });

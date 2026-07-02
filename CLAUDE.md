@@ -87,9 +87,15 @@ Each entry type also has a `PATCH /api/entries/<kind>/:id` for in-place edits. E
 
 Both are computed client-side in `public/index.html`, decaying independently per bolus entry (`iobFraction()` / `cobFraction()`), summed across all boluses in `calcIOB()`/`calcCOB()`. IOB uses the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. COB uses a simpler linear absorption model over `COB_DURATION = 180` minutes (carb absorption varies far more by food type than insulin action does, so a tuned curve isn't worth it here — linear is the standard pragmatic default).
 
-### Settings (target range, insulin:carb ratio)
+### Settings (target range, insulin:carb ratio, body profile)
 
 `GET`/`POST /api/settings` read/write `data.settings`. `targetLow`/`targetHigh` drive glucose color-coding and time-in-range everywhere (both backend insights/summary and the frontend chart band/dot colors) — there's no hardcoded 4–10 range left. `carbRatio` is the manual meal-suggestion fallback described above. The frontend fetches settings once in `init()` before the first render so colors are correct on load, and again whenever the Settings tab is opened.
+
+`heightCm`/`weightKg`/`sex`/`bodyFatPct` (Settings tab "Body Profile" card) are stored purely as context for the Insulin Health Check below (BMI, dose-per-kg) — **never read by any suggestion or calculation elsewhere** (`suggestMealDose`, correction factor, etc.). This is a deliberate boundary: self-estimated body fat % in particular isn't precise enough to weight into anything without giving false confidence. If you're tempted to use these fields for more than display, reconsider.
+
+### Insulin Health Check
+
+`checkInsulinHealth()` (backing `GET /api/insulin-health`, shown on the Insights tab) reports standard clinical-style dose metrics over the trailing 7 days: Total Daily Dose (TDD = bolus + correction + basal), TDD/kg (needs `weightKg`), bolus:basal split, time-in-range, and BMI (needs `heightCm`+`weightKg`). `periodStats()` computes these for an arbitrary window; the function calls it twice (this week vs. the prior week) and emits a plain-language note for each metric that moved meaningfully (TDD ±2u/day, TIR ±5pp, bolus share ±8pp) — silence on a metric means it didn't move enough to be worth mentioning, not that it's broken. Requires ≥20 glucose readings in the trailing week before returning anything (`available: false` otherwise), matching `analysePatterns()`'s data-sufficiency bar.
 
 ### CSV export
 

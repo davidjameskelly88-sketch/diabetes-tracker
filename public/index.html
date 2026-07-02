@@ -183,6 +183,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
 <!-- INSIGHTS -->
 <div class="panel" id="panel-insights">
+<div class="card"><div class="card-title">💪 Insulin Health Check</div><div id="insulinHealth"><div class="empty">Loading…</div></div></div>
 <div class="card"><div class="card-title">🧠 Pattern Analysis</div><div id="insightsList"><div class="empty">Loading…</div></div></div>
 <div class="card"><div class="card-title">🎯 Correction History</div><div id="corrHistory"><div class="empty">No corrections logged yet</div></div></div>
 </div>
@@ -203,6 +204,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <div class="ig" style="margin-bottom:12px"><label>1 unit of Novorapid per __ g of carbs (optional — used until you have enough history)</label><input type="number" inputmode="decimal" id="settRatio" placeholder="e.g. 10"></div>
   <button class="btn btn-blue" onclick="saveSettings()">Save settings</button>
   <div id="settingsMsg"></div>
+</div>
+<div class="card">
+  <div class="card-title">🧍 Body Profile</div>
+  <div class="input-row">
+    <div class="ig"><label>Height (cm)</label><input type="number" inputmode="decimal" id="settHeight"></div>
+    <div class="ig"><label>Weight (kg)</label><input type="number" inputmode="decimal" id="settWeight"></div>
+  </div>
+  <div class="input-row">
+    <div class="ig"><label>Sex</label><select id="settSex"><option value="">Prefer not to say</option><option value="male">Male</option><option value="female">Female</option><option value="other">Other</option></select></div>
+    <div class="ig"><label>Approx. body fat %</label><input type="number" inputmode="decimal" id="settBodyFat" placeholder="optional"></div>
+  </div>
+  <button class="btn btn-blue" onclick="saveSettings()">Save settings</button>
+  <div style="font-size:11px;color:var(--dim);margin-top:8px">Used only for context (BMI, dose-per-kg) in the Insulin Health Check on the Insights tab — never used to adjust any suggestion, since self-estimated body fat % isn't precise enough to build calculations on.</div>
 </div>
 <div class="card">
   <div class="card-title">📤 Export Data</div>
@@ -243,7 +257,7 @@ async function doLogin(){const r=await fetch('/api/login',{method:'POST',headers
 document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 function showApp(){document.getElementById('loginPage').style.display='none';document.getElementById('appPage').style.display='block';init()}
 
-function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory()}if(t==='summary')loadDailySummary();if(t==='settings')fetchSettings()}
+function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory();loadInsulinHealth()}if(t==='summary')loadDailySummary();if(t==='settings')fetchSettings()}
 
 async function api(u,o){const r=await fetch(u,o);if(r.status===401)location.reload();return r.json()}
 
@@ -277,6 +291,26 @@ async function loadActivities(){
 }
 
 async function loadInsights(){try{const ins=await api('/api/insights');document.getElementById('insightsList').innerHTML=ins.map(i=>`<div class="insight ${i.type}">${i.text}</div>`).join('')}catch(e){}}
+
+async function loadInsulinHealth(){
+  const el=document.getElementById('insulinHealth');
+  try{const h=await api('/api/insulin-health');
+  if(!h.available){el.innerHTML=`<div class="empty">${h.message}</div>`;return}
+  let html=`<div class="daily-grid">
+      <div class="daily-stat"><div class="dv">${h.tdd}u</div><div class="dl">Avg daily dose</div></div>
+      <div class="daily-stat"><div class="dv">${h.tddPerKg!=null?h.tddPerKg+'u/kg':'—'}</div><div class="dl">Dose per kg</div></div>
+      <div class="daily-stat"><div class="dv">${h.tir!=null?h.tir+'%':'—'}</div><div class="dl">Time in range</div></div>
+    </div>
+    <div class="daily-grid">
+      <div class="daily-stat"><div class="dv">${h.bolusPct!=null?h.bolusPct+'%':'—'}</div><div class="dl">Bolus share</div></div>
+      <div class="daily-stat"><div class="dv">${h.basalPct!=null?h.basalPct+'%':'—'}</div><div class="dl">Basal share</div></div>
+      <div class="daily-stat"><div class="dv">${h.bmi!=null?h.bmi:'—'}</div><div class="dl">BMI</div></div>
+    </div>`;
+  if(h.notes&&h.notes.length)html+=h.notes.map(n=>`<div class="insight info">${n}</div>`).join('');
+  else html+=`<div class="insight info">No notable week-over-week changes yet.</div>`;
+  el.innerHTML=html;
+  }catch(e){el.innerHTML='<div class="empty">Could not load.</div>'}
+}
 
 async function loadCorrHistory(){
   try{const d=await api('/api/entries');const corrs=(d.corrections||[]).slice(0,10);const el=document.getElementById('corrHistory');
@@ -321,13 +355,22 @@ async function fetchSettings(){
   document.getElementById('settLow').value=settings.targetLow;
   document.getElementById('settHigh').value=settings.targetHigh;
   document.getElementById('settRatio').value=settings.carbRatio||'';
+  document.getElementById('settHeight').value=settings.heightCm||'';
+  document.getElementById('settWeight').value=settings.weightKg||'';
+  document.getElementById('settSex').value=settings.sex||'';
+  document.getElementById('settBodyFat').value=settings.bodyFatPct||'';
   }catch(e){}
 }
 async function saveSettings(){
   const lo=parseFloat(document.getElementById('settLow').value),hi=parseFloat(document.getElementById('settHigh').value);
   const ratio=document.getElementById('settRatio').value;
+  const height=document.getElementById('settHeight').value,weight=document.getElementById('settWeight').value;
+  const sex=document.getElementById('settSex').value,bodyFat=document.getElementById('settBodyFat').value;
   const msg=document.getElementById('settingsMsg');
-  const r=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetLow:lo,targetHigh:hi,carbRatio:ratio===''?null:ratio})});
+  const r=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    targetLow:lo,targetHigh:hi,carbRatio:ratio===''?null:ratio,
+    heightCm:height===''?null:height,weightKg:weight===''?null:weight,sex:sex===''?null:sex,bodyFatPct:bodyFat===''?null:bodyFat,
+  })});
   if(r.error){msg.innerHTML=`<div class="suggest-box" style="background:var(--red-l);color:var(--red)">${r.error}</div>`;return}
   settings=r;
   msg.innerHTML=`<div class="suggest-box" style="background:var(--green-l);color:var(--green)">Saved.</div>`;
