@@ -30,14 +30,15 @@ The server calls `process.exit(1)` at startup if `LLU_EMAIL`/`LLU_PASSWORD`/`APP
 Two files hold essentially all the logic:
 
 - **`server.js`** — Express backend, LibreLinkUp client, pattern-analysis engine, JSON-file persistence.
-- **`public/index.html`** — entire frontend: markup, CSS, and vanilla JS in one file (no framework, no bundler). Rendered as a single-page app with 4 tabs (Track / Activity / Insights / Today).
+- **`public/index.html`** — entire frontend: markup, CSS, and vanilla JS in one file (no framework, no bundler). Rendered as a single-page app with 5 tabs (Track / Activity / Insights / Today / Settings).
 
 ### Data persistence
 
 No real database — a single JSON blob read/written wholesale via `loadData()`/`saveData()` in `server.js` (both `async`, all call sites use `await`). Shape:
 ```js
-{ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [] }
+{ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { targetLow, targetHigh, carbRatio } }
 ```
+`backfill()` merges in `DEFAULT_SETTINGS` (and an empty `corrections` array) for blobs saved before a field existed, so old data doesn't need a migration.
 Retention is pruned inline: `glucoseHistory` kept 7 days, `activities` kept 30 days, `corrections` kept indefinitely (needed for long-term pattern analysis).
 
 Storage backend depends on environment:
@@ -66,19 +67,37 @@ When a user logs an insulin "correction" dose (`POST /api/entries/correction`), 
 - If carbs were logged between the correction and its resolution, the drop is confounded — the correction is flagged `carbInterference` and excluded from the "clean" `resolved` set used everywhere else (correction-factor average, `suggestedDrop`, `analysePatterns()`, `suggestMealDose()`).
 - The rolling average `dropPerUnit` across clean resolved corrections becomes the user's personal correction factor, surfaced via `GET /api/correction-factor` and used to auto-suggest `suggestedDrop` on future correction entries. That endpoint also returns `recentCarbs` (carbs logged in the last 2h) as a heads-up that the correction may be less predictable.
 
-`analysePatterns()` (backing `GET /api/insights`) builds on this history: correction-factor accuracy, exercise-day vs. rest-day insulin sensitivity, post-workout glucose deltas, time-of-day highs/lows, and time-in-range (4.0–10.0 mmol/L target).
+`analysePatterns()` (backing `GET /api/insights`) builds on this history: correction-factor accuracy, exercise-day vs. rest-day insulin sensitivity, post-workout glucose deltas, time-of-day highs/lows, and time-in-range (against `settings.targetLow`/`targetHigh`, not a hardcoded range).
 
 ### Meal dose suggestion
 
-`suggestMealDose(carbs)` (backing `GET /api/meal-suggestion?carbs=`) is a heuristic, not ML: it weights past insulin-dosed meals (`boluses` with `units>0 && carbs>0`) by carb-amount similarity, recency (~30-day half-life), time-of-day-bucket match, and exercise-proximity match, to get a base insulin:carb ratio. It then nudges that ratio using how similar meals actually turned out — post-meal glucose nadir (using `correctionFactor` to translate an excessive drop into a unit reduction) or whether a correction was needed afterward (nudges up).
+`suggestMealDose(carbs)` (backing `GET /api/meal-suggestion?carbs=`) is a heuristic, not ML: it weights past insulin-dosed meals (`boluses` with `units>0 && carbs>0`) by carb-amount similarity, recency (~30-day half-life), time-of-day-bucket match, and exercise-proximity match, to get a base insulin:carb ratio. It then nudges that ratio using how similar meals actually turned out — post-meal glucose nadir (using `correctionFactor` to translate an excessive drop into a unit reduction) or whether a correction was needed afterward (nudges up). If there isn't enough history yet (< 3 meals, or nothing similar enough), it falls back to `settings.carbRatio` (a manually-set "1 unit per Xg" ratio) when the user has set one.
 
 ### Meals without insulin
 
 `boluses` entries don't require `units` — `POST /api/entries/bolus` accepts carbs-only entries (`units: 0`) for logging food eaten without dosing (e.g. treating/preventing a hypo). Frontend and history rendering treat `units === 0` as "carbs only" rather than a 0-unit dose. Anywhere historical meals feed an algorithm (`suggestMealDose`), carbs-only entries are excluded via the `units > 0` filter, but they still count as "recent carbs" for correction-interference/context checks.
 
+### Backdated logging and editing
+
+All three logging endpoints (`bolus`, `basal`, `correction`) accept an optional `time` (epoch ms or parseable date string) so a meal/dose can be logged after the fact instead of always defaulting to "now" — `resolveEntryTime()` clamps it to not-future. For a backdated correction, `startGlucose` is looked up via `glucoseAt()` (closest `glucoseHistory` point within 15min of that time, or the live cache if the time is within 6min of now) instead of always using the current cached reading.
+
+Each entry type also has a `PATCH /api/entries/<kind>/:id` for in-place edits. Editing a correction's `units` or `time` invalidates its prior resolution (`resolved`/`actualGlucose`/etc. reset to null/false so `resolveCorrections()` re-derives them next glucose poll) — but time comparisons use a **60s tolerance**, not exact equality, because the frontend's `datetime-local` input only has minute precision; without the tolerance, saving an edit that didn't touch the time field would still spuriously "change" it by a few rounded seconds and wipe `startGlucose` every time. If you touch this code, keep that tolerance.
+
+### Carbs on board (COB) and insulin on board (IOB)
+
+Both are computed client-side in `public/index.html`, decaying independently per bolus entry (`iobFraction()` / `cobFraction()`), summed across all boluses in `calcIOB()`/`calcCOB()`. IOB uses the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. COB uses a simpler linear absorption model over `COB_DURATION = 180` minutes (carb absorption varies far more by food type than insulin action does, so a tuned curve isn't worth it here — linear is the standard pragmatic default).
+
+### Settings (target range, insulin:carb ratio)
+
+`GET`/`POST /api/settings` read/write `data.settings`. `targetLow`/`targetHigh` drive glucose color-coding and time-in-range everywhere (both backend insights/summary and the frontend chart band/dot colors) — there's no hardcoded 4–10 range left. `carbRatio` is the manual meal-suggestion fallback described above. The frontend fetches settings once in `init()` before the first render so colors are correct on load, and again whenever the Settings tab is opened.
+
+### CSV export
+
+`GET /api/export.csv` flattens all five record arrays into one wide sheet with a `type` discriminator column (`bolus`/`carbs_only`/`basal`/`correction`/`workout`/`daily_summary`/`glucose`), sorted by time. Triggered from the frontend via a plain `<a href download>` — auth works because the browser sends the existing session cookie on that same-origin navigation, no token wiring needed.
+
 ### Frontend
 
-`public/index.html` polls the backend directly (no client-side router/state library). Insulin-on-board is computed client-side in `calcIOB()` using the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`.
+`public/index.html` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`.
 
 ### External integration: Apple Shortcuts
 

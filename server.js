@@ -38,11 +38,19 @@ if (!APP_PASSWORD || APP_PASSWORD === 'choose-a-password-here') {
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const UPSTASH_KEY = 'diabetes-tracker-data';
-const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [] });
+const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, carbRatio: null }; // carbRatio = grams of carbs per 1 unit
+const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS } });
 
 const DATA_DIR = fs.existsSync(path.join(__dirname, '.data'))
   ? path.join(__dirname, '.data') : __dirname;
 const DATA_PATH = path.join(DATA_DIR, 'data.json');
+
+function backfill(d) {
+  if (!d.corrections) d.corrections = [];
+  if (!d.settings) d.settings = { ...DEFAULT_SETTINGS };
+  else d.settings = { ...DEFAULT_SETTINGS, ...d.settings };
+  return d;
+}
 
 async function loadData() {
   if (UPSTASH_URL && UPSTASH_TOKEN) {
@@ -50,15 +58,11 @@ async function loadData() {
       const res = await fetch(`${UPSTASH_URL}/get/${UPSTASH_KEY}`, { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } });
       const { result } = await res.json();
       if (!result) return EMPTY_DATA();
-      const d = JSON.parse(result);
-      if (!d.corrections) d.corrections = [];
-      return d;
+      return backfill(JSON.parse(result));
     } catch (e) { console.error('❌ Upstash load error:', e.message); return EMPTY_DATA(); }
   }
   try {
-    const d = JSON.parse(fs.readFileSync(DATA_PATH, 'utf8'));
-    if (!d.corrections) d.corrections = [];
-    return d;
+    return backfill(JSON.parse(fs.readFileSync(DATA_PATH, 'utf8')));
   } catch (e) {
     return EMPTY_DATA();
   }
@@ -225,7 +229,8 @@ async function resolveCorrections() {
 // ─── Pattern Analysis ─────────────────────────────────────────────────
 async function analysePatterns() {
   const data = await loadData();
-  const { boluses, corrections, activities, glucoseHistory } = data;
+  const { boluses, corrections, activities, glucoseHistory, settings } = data;
+  const { targetLow, targetHigh } = settings;
   const insights = [];
 
   if (glucoseHistory.length < 20) {
@@ -309,9 +314,9 @@ async function analysePatterns() {
   }
 
   // 6. Time in range
-  const inRange=glucoseHistory.filter(g=>g.value>=4&&g.value<=10).length;
+  const inRange=glucoseHistory.filter(g=>g.value>=targetLow&&g.value<=targetHigh).length;
   const tir=((inRange/glucoseHistory.length)*100).toFixed(0);
-  insights.push({type:parseInt(tir)>=70?'positive':'info',text:`Time in range (4–10): ${tir}% across ${glucoseHistory.length} readings.`});
+  insights.push({type:parseInt(tir)>=70?'positive':'info',text:`Time in range (${targetLow}–${targetHigh}): ${tir}% across ${glucoseHistory.length} readings.`});
 
   return insights.length?insights:[{type:'info',text:'No strong patterns yet. Keep logging.'}];
 }
@@ -324,8 +329,14 @@ function timeBucket(h) { return h<5?'night':h<11?'morning':h<17?'afternoon':h<22
 
 async function suggestMealDose(carbs) {
   const data = await loadData();
+  const { targetLow, targetHigh, carbRatio } = data.settings;
+  const targetMid = (targetLow + targetHigh) / 2;
   const meals = data.boluses.filter(b => b.units > 0 && b.carbs > 0);
   if (meals.length < 3) {
+    if (carbRatio) {
+      return { suggestion: parseFloat((carbs / carbRatio).toFixed(1)), basedOn: 0,
+        message: `Using your manual ratio (1u per ${carbRatio}g) — not enough history yet for a personalised suggestion.` };
+    }
     return { suggestion: null, basedOn: meals.length, message: 'Log a few more meals with insulin to get personalised suggestions.' };
   }
 
@@ -356,6 +367,10 @@ async function suggestMealDose(carbs) {
 
   const totalWeight = scored.reduce((s,x) => s + x.weight, 0);
   if (!scored.length || totalWeight < 0.5) {
+    if (carbRatio) {
+      return { suggestion: parseFloat((carbs / carbRatio).toFixed(1)), basedOn: 0,
+        message: `Using your manual ratio (1u per ${carbRatio}g) — not enough similar meals logged for this carb amount.` };
+    }
     return { suggestion: null, basedOn: meals.length, message: 'Not enough similar meals logged yet for this carb amount.' };
   }
 
@@ -367,22 +382,42 @@ async function suggestMealDose(carbs) {
   if (withNadir.length) {
     const nadirWeight = withNadir.reduce((s,x) => s + x.weight, 0);
     const avgNadir = withNadir.reduce((s,x) => s + x.nadir * x.weight, 0) / nadirWeight;
-    const lowShare = withNadir.filter(x => x.nadir < 4).reduce((s,x) => s + x.weight, 0) / nadirWeight;
+    const lowShare = withNadir.filter(x => x.nadir < targetLow).reduce((s,x) => s + x.weight, 0) / nadirWeight;
     const correctionShare = scored.filter(x => x.hadCorrection).reduce((s,x) => s + x.weight, 0) / totalWeight;
 
     if (lowShare > 0.4 && correctionFactor) {
-      const reduction = Math.max(0.5, (7 - avgNadir) / correctionFactor);
+      const reduction = Math.max(0.5, (targetMid - avgNadir) / correctionFactor);
       suggestedUnits = Math.max(0, suggestedUnits - reduction);
-      note = `Similar meals dropped below 4 mmol/L ${Math.round(lowShare*100)}% of the time (avg low ${avgNadir.toFixed(1)}) — suggestion reduced.`;
+      note = `Similar meals dropped below ${targetLow} mmol/L ${Math.round(lowShare*100)}% of the time (avg low ${avgNadir.toFixed(1)}) — suggestion reduced.`;
     } else if (correctionShare > 0.4) {
       suggestedUnits += 1;
       note = `A correction was needed after ${Math.round(correctionShare*100)}% of similar meals — suggestion increased slightly.`;
-    } else if (avgNadir >= 4 && avgNadir <= 10) {
+    } else if (avgNadir >= targetLow && avgNadir <= targetHigh) {
       note = `Similar meals landed in range (avg low ${avgNadir.toFixed(1)} mmol/L).`;
     }
   }
 
   return { suggestion: parseFloat(suggestedUnits.toFixed(1)), basedOn: scored.length, note };
+}
+
+// ─── Backdated logging helpers ─────────────────────────────────────────
+// Entries default to "now" but can be logged for a past moment (e.g. "ate 30g twenty
+// minutes ago"). Clamp to not-future so IOB/COB/resolution windows never see a dose
+// that hasn't happened yet.
+function resolveEntryTime(t) {
+  if (!t) return Date.now();
+  const parsed = new Date(t).getTime();
+  if (isNaN(parsed)) return Date.now();
+  return Math.min(parsed, Date.now());
+}
+// Best-guess glucose at an arbitrary past moment: the live cache if the moment is close
+// to now, otherwise the closest stored history point within 15min.
+function glucoseAt(data, time) {
+  if (Math.abs(Date.now() - time) < 6*60000 && glucoseCache && !glucoseCache.error) return glucoseCache.value;
+  const candidates = data.glucoseHistory.filter(g => Math.abs(g.time - time) < 15*60000);
+  if (!candidates.length) return null;
+  candidates.sort((a,b) => Math.abs(a.time-time) - Math.abs(b.time-time));
+  return candidates[0].value;
 }
 
 // ─── Daily Summary ────────────────────────────────────────────────────
@@ -397,12 +432,13 @@ async function getDailySummary() {
   const todayCorrections = data.corrections.filter(c => c.time >= ts);
   const todaySummary = data.activities.find(a => a.type === 'daily_summary' && a.time >= ts);
 
+  const { targetLow, targetHigh } = data.settings;
   const avgGlucose = todayGlucose.length > 0
     ? (todayGlucose.reduce((s,g) => s + g.value, 0) / todayGlucose.length).toFixed(1) : null;
-  const inRange = todayGlucose.filter(g => g.value >= 4 && g.value <= 10).length;
+  const inRange = todayGlucose.filter(g => g.value >= targetLow && g.value <= targetHigh).length;
   const tirPct = todayGlucose.length > 0 ? ((inRange / todayGlucose.length) * 100).toFixed(0) : null;
-  const low = todayGlucose.filter(g => g.value < 4).length;
-  const high = todayGlucose.filter(g => g.value > 10).length;
+  const low = todayGlucose.filter(g => g.value < targetLow).length;
+  const high = todayGlucose.filter(g => g.value > targetHigh).length;
 
   return {
     glucose: { avg: avgGlucose, tir: tirPct, readings: todayGlucose.length, low, high,
@@ -454,26 +490,27 @@ app.get('/api/entries',requireAuth,async(req,res)=>{
 });
 
 app.post('/api/entries/bolus',requireAuth,async(req,res)=>{
-  const{units,carbs}=req.body;
+  const{units,carbs,time}=req.body;
   const u=units?parseFloat(units):0, c=carbs?parseFloat(carbs):null;
   if((!u||u<=0)&&(!c||c<=0))return res.status(400).json({error:'Enter carbs or units'});
   const data=await loadData();
-  const entry={id:Date.now(),time:Date.now(),units:u,carbs:c};
-  data.boluses.unshift(entry);await saveData(data);res.json(entry);
+  const entry={id:Date.now(),time:resolveEntryTime(time),units:u,carbs:c};
+  data.boluses.unshift(entry);data.boluses.sort((a,b)=>b.time-a.time);await saveData(data);res.json(entry);
 });
 
 app.post('/api/entries/basal',requireAuth,async(req,res)=>{
-  const{units}=req.body;if(!units||units<=0)return res.status(400).json({error:'Invalid'});
+  const{units,time}=req.body;if(!units||units<=0)return res.status(400).json({error:'Invalid'});
   const data=await loadData();
-  const entry={id:Date.now(),time:Date.now(),units:parseFloat(units)};
-  data.basalDoses.unshift(entry);await saveData(data);res.json(entry);
+  const entry={id:Date.now(),time:resolveEntryTime(time),units:parseFloat(units)};
+  data.basalDoses.unshift(entry);data.basalDoses.sort((a,b)=>b.time-a.time);await saveData(data);res.json(entry);
 });
 
 app.post('/api/entries/correction',requireAuth,async(req,res)=>{
-  const{units,predictedGlucose}=req.body;
+  const{units,predictedGlucose,time}=req.body;
   if(!units||units<=0)return res.status(400).json({error:'Invalid units'});
-  const currentGlucose = glucoseCache ? glucoseCache.value : null;
   const data=await loadData();
+  const entryTime=resolveEntryTime(time);
+  const currentGlucose = glucoseAt(data, entryTime);
 
   // Calculate suggested prediction based on historical correction factor (excluding
   // corrections that were confounded by carbs eaten during their resolution window)
@@ -487,11 +524,11 @@ app.post('/api/entries/correction',requireAuth,async(req,res)=>{
   // Carbs eaten shortly before this correction may still be digesting and will make its
   // effect less predictable - captured here for context in the correction history.
   const recentCarbs = data.boluses
-    .filter(b => b.carbs > 0 && b.time > Date.now() - 120*60000)
+    .filter(b => b.carbs > 0 && b.time > entryTime - 120*60000 && b.time <= entryTime)
     .reduce((s,b) => s + b.carbs, 0);
 
   const entry={
-    id:Date.now(), time:Date.now(), units:parseFloat(units),
+    id:Date.now(), time:entryTime, units:parseFloat(units),
     startGlucose: currentGlucose,
     predictedGlucose: predictedGlucose ? parseFloat(predictedGlucose) : null,
     suggestedDrop,
@@ -499,7 +536,7 @@ app.post('/api/entries/correction',requireAuth,async(req,res)=>{
     actualGlucose: null, resolved: false, resolvedAt: null, dropPerUnit: null, accuracy: null,
     carbInterference: false, interferingCarbs: null,
   };
-  data.corrections.unshift(entry);await saveData(data);res.json(entry);
+  data.corrections.unshift(entry);data.corrections.sort((a,b)=>b.time-a.time);await saveData(data);res.json(entry);
 });
 
 app.delete('/api/entries/bolus/:id',requireAuth,async(req,res)=>{
@@ -512,6 +549,66 @@ app.delete('/api/entries/correction/:id',requireAuth,async(req,res)=>{
   const data=await loadData();data.corrections=data.corrections.filter(c=>c.id!==parseInt(req.params.id));await saveData(data);res.json({ok:true});
 });
 
+app.patch('/api/entries/bolus/:id',requireAuth,async(req,res)=>{
+  const{units,carbs,time}=req.body;
+  const data=await loadData();
+  const entry=data.boluses.find(b=>b.id===parseInt(req.params.id));
+  if(!entry)return res.status(404).json({error:'Not found'});
+  if(units!=null){const u=parseFloat(units);if(!isNaN(u))entry.units=u;}
+  if(carbs!==undefined){const c=(carbs===null||carbs==='')?null:parseFloat(carbs);entry.carbs=(c!=null&&!isNaN(c))?c:null;}
+  // datetime-local inputs only have minute precision - ignore rounding noise under a minute
+  if(time){const newTime=resolveEntryTime(time);if(Math.abs(newTime-entry.time)>=60000)entry.time=newTime;}
+  if((!entry.units||entry.units<=0)&&(!entry.carbs||entry.carbs<=0))return res.status(400).json({error:'Enter carbs or units'});
+  data.boluses.sort((a,b)=>b.time-a.time);
+  await saveData(data);res.json(entry);
+});
+
+app.patch('/api/entries/basal/:id',requireAuth,async(req,res)=>{
+  const{units,time}=req.body;
+  const data=await loadData();
+  const entry=data.basalDoses.find(b=>b.id===parseInt(req.params.id));
+  if(!entry)return res.status(404).json({error:'Not found'});
+  if(units!=null){const u=parseFloat(units);if(isNaN(u)||u<=0)return res.status(400).json({error:'Invalid units'});entry.units=u;}
+  if(time){const newTime=resolveEntryTime(time);if(Math.abs(newTime-entry.time)>=60000)entry.time=newTime;}
+  data.basalDoses.sort((a,b)=>b.time-a.time);
+  await saveData(data);res.json(entry);
+});
+
+app.patch('/api/entries/correction/:id',requireAuth,async(req,res)=>{
+  const{units,predictedGlucose,time}=req.body;
+  const data=await loadData();
+  const entry=data.corrections.find(c=>c.id===parseInt(req.params.id));
+  if(!entry)return res.status(404).json({error:'Not found'});
+  let resetResolution=false;
+  if(units!=null){
+    const u=parseFloat(units);
+    if(isNaN(u)||u<=0)return res.status(400).json({error:'Invalid units'});
+    if(u!==entry.units)resetResolution=true;
+    entry.units=u;
+  }
+  if(predictedGlucose!==undefined){
+    entry.predictedGlucose=(predictedGlucose===null||predictedGlucose==='')?null:parseFloat(predictedGlucose);
+  }
+  if(time){
+    const newTime=resolveEntryTime(time);
+    // datetime-local inputs only have minute precision, so compare with a tolerance rather
+    // than exact equality - otherwise every edit "changes" the time by a few rounded seconds
+    // and needlessly wipes startGlucose/resolution even when the user didn't touch it.
+    if(Math.abs(newTime-entry.time)>=60000){
+      entry.time=newTime;
+      entry.startGlucose=glucoseAt(data,newTime);
+      resetResolution=true;
+    }
+  }
+  // Editing units or time invalidates any prior resolution - let resolveCorrections() re-derive it.
+  if(resetResolution){
+    entry.actualGlucose=null;entry.resolved=false;entry.resolvedAt=null;entry.dropPerUnit=null;entry.accuracy=null;
+    entry.carbInterference=false;entry.interferingCarbs=null;
+  }
+  data.corrections.sort((a,b)=>b.time-a.time);
+  await saveData(data);res.json(entry);
+});
+
 // Get suggested correction factor
 app.get('/api/correction-factor',requireAuth,async(req,res)=>{
   const data=await loadData();
@@ -520,6 +617,31 @@ app.get('/api/correction-factor',requireAuth,async(req,res)=>{
   if(resolved.length<3) return res.json({factor:null,count:resolved.length,message:'Need at least 3 resolved corrections',recentCarbs});
   const factor=resolved.reduce((s,c)=>s+c.dropPerUnit,0)/resolved.length;
   res.json({factor:parseFloat(factor.toFixed(2)),count:resolved.length,recentCarbs});
+});
+
+// Settings (target range, manual insulin:carb ratio)
+app.get('/api/settings',requireAuth,async(req,res)=>{
+  const data=await loadData();
+  res.json(data.settings);
+});
+app.post('/api/settings',requireAuth,async(req,res)=>{
+  const{targetLow,targetHigh,carbRatio}=req.body;
+  const data=await loadData();
+  if(targetLow!=null&&targetHigh!=null){
+    const lo=parseFloat(targetLow),hi=parseFloat(targetHigh);
+    if(isNaN(lo)||isNaN(hi)||lo<=0||hi<=lo)return res.status(400).json({error:'Invalid target range'});
+    data.settings.targetLow=lo;data.settings.targetHigh=hi;
+  }
+  if(carbRatio!==undefined){
+    if(carbRatio===null||carbRatio===''){data.settings.carbRatio=null}
+    else{
+      const cr=parseFloat(carbRatio);
+      if(isNaN(cr)||cr<=0)return res.status(400).json({error:'Invalid carb ratio'});
+      data.settings.carbRatio=cr;
+    }
+  }
+  await saveData(data);
+  res.json(data.settings);
 });
 
 // Health / Activity
@@ -571,6 +693,28 @@ app.get('/api/meal-suggestion',requireAuth,async(req,res)=>{
   const carbs=parseFloat(req.query.carbs);
   if(!carbs||carbs<=0)return res.status(400).json({error:'Invalid carbs'});
   try{res.json(await suggestMealDose(carbs))}catch(e){res.json({suggestion:null,message:'Could not compute suggestion.'})}
+});
+
+// CSV export - unified sheet across all record types, one `type` discriminator column
+app.get('/api/export.csv',requireAuth,async(req,res)=>{
+  const data=await loadData();
+  const cols=['type','time','units','carbs','startGlucose','predictedGlucose','actualGlucose','dropPerUnit','accuracy','workoutType','duration','calories','steps','activeCalories','exerciseMinutes','standHours','glucoseValue','trend'];
+  const rows=[];
+  data.boluses.forEach(b=>rows.push({type:b.units>0?'bolus':'carbs_only',time:b.time,units:b.units||null,carbs:b.carbs}));
+  data.basalDoses.forEach(b=>rows.push({type:'basal',time:b.time,units:b.units}));
+  data.corrections.forEach(c=>rows.push({type:'correction',time:c.time,units:c.units,startGlucose:c.startGlucose,predictedGlucose:c.predictedGlucose,actualGlucose:c.actualGlucose,dropPerUnit:c.dropPerUnit,accuracy:c.accuracy}));
+  data.activities.forEach(a=>{
+    if(a.type==='workout')rows.push({type:'workout',time:a.time,workoutType:a.workoutType,duration:a.duration,calories:a.calories});
+    else rows.push({type:'daily_summary',time:a.time,activeCalories:a.activeCalories,exerciseMinutes:a.exerciseMinutes,standHours:a.standHours,steps:a.steps});
+  });
+  data.glucoseHistory.forEach(g=>rows.push({type:'glucose',time:g.time,glucoseValue:g.value,trend:g.trend}));
+  rows.sort((a,b)=>a.time-b.time);
+  const csvEscape=v=>{if(v==null)return'';const s=String(v);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+  const lines=[cols.join(',')];
+  rows.forEach(r=>lines.push(cols.map(c=>c==='time'?new Date(r.time).toISOString():csvEscape(r[c])).join(',')));
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="diabetes-tracker-export.csv"');
+  res.send(lines.join('\n'));
 });
 
 // ─── Start ────────────────────────────────────────────────────────────

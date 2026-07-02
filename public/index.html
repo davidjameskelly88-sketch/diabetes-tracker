@@ -35,9 +35,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .btn-orange{background:var(--orange);color:#fff}.btn-sm{width:auto;padding:8px 16px;font-size:12px}
 .basal-header{display:flex;justify-content:space-between;align-items:center}
 .basal-toggle{font-size:12px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none}
-.basal-form{display:none;margin-top:12px;gap:10px}.basal-form.vis{display:flex}
-.basal-form input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:14px;outline:none;background:var(--bg)}
-.basal-form button{padding:10px 20px;border-radius:10px;border:none;background:var(--text);color:#fff;font-size:13px;font-weight:600;cursor:pointer}
+.basal-form{display:none;margin-top:12px;flex-direction:column;gap:10px}.basal-form.vis{display:flex}
+.basal-row{display:flex;gap:10px}
+.basal-row input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:14px;outline:none;background:var(--bg)}
+.basal-row button{padding:10px 20px;border-radius:10px;border:none;background:var(--text);color:#fff;font-size:13px;font-weight:600;cursor:pointer}
 .rings{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}.ring-item{text-align:center}
 .ring-item .val{font-size:18px;font-weight:700}.ring-item .lbl{font-size:10px;color:var(--dim);margin-top:2px}
 .workout{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}.workout:last-child{border-bottom:none}
@@ -69,6 +70,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .daily-stat{text-align:center;padding:10px;background:var(--bg);border-radius:10px}
 .daily-stat .dv{font-size:20px;font-weight:700}.daily-stat .dl{font-size:10px;color:var(--dim);margin-top:2px}
 .suggest-box{background:var(--purple-l);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:12px;color:#5b21b6}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
+.grid3 .stat{padding:10px}
+.grid3 .stat-val{font-size:19px}
+.backdate-toggle{font-size:11px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none;padding:0;margin-bottom:10px;display:block}
+.backdate-input{display:none;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:13px;outline:none;background:var(--bg);margin-bottom:12px}
+.backdate-input.vis{display:block}
+.log-actions{display:flex;gap:2px;align-items:center;flex-shrink:0}
+.log-edit{background:none;border:none;color:#cbd5e1;cursor:pointer;padding:4px;font-size:14px}.log-edit:hover{color:var(--blue)}
+.edit-entry{display:block!important}
+.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.edit-hint{font-size:11px;color:var(--dim);margin-bottom:10px}
+.edit-actions{display:flex;gap:8px}
+.edit-actions .btn{width:auto;flex:1}
 </style>
 </head>
 <body>
@@ -85,6 +99,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <button class="tab" onclick="showTab('activity')">Activity</button>
   <button class="tab" onclick="showTab('insights')">Insights</button>
   <button class="tab" onclick="showTab('summary')">Today</button>
+  <button class="tab" onclick="showTab('settings')">⚙️</button>
 </div>
 
 <!-- TRACK -->
@@ -99,8 +114,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <div class="chart-wrap"><canvas id="glucoseChart"></canvas></div>
 </div>
 
-<div class="grid2">
-  <div class="stat"><div class="stat-label">📉 Insulin on Board</div><div class="stat-val blue" id="iob">0.0<span class="u">u</span></div></div>
+<div class="grid3">
+  <div class="stat"><div class="stat-label">📉 IOB</div><div class="stat-val blue" id="iob">0.0<span class="u">u</span></div></div>
+  <div class="stat"><div class="stat-label">🍬 COB</div><div class="stat-val" style="color:var(--orange)" id="cob">0<span class="u">g</span></div></div>
   <div class="stat"><div class="stat-label">🍽️ Last Carbs</div><div class="stat-val" id="lastCarbs">—<span class="u">g</span></div></div>
 </div>
 <div class="summary-row">
@@ -116,6 +132,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="ig"><label>Novorapid (u)</label><input type="number" inputmode="decimal" id="bolusIn" placeholder="optional"></div>
   </div>
   <div id="mealSuggestion"></div>
+  <button class="backdate-toggle" id="bolusTimeToggle" type="button">🕐 Backdate</button>
+  <input type="datetime-local" id="bolusTimeIn" class="backdate-input">
   <button class="btn btn-blue" id="addBolusBtn" disabled onclick="addBolus()">＋ Log bolus</button>
 </div>
 
@@ -126,6 +144,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="ig"><label>Target glucose (mmol/L)</label><input type="number" inputmode="decimal" id="corrTargetIn" placeholder="e.g. 6.5"></div>
   </div>
   <div id="corrSuggestion"></div>
+  <button class="backdate-toggle" id="corrTimeToggle" type="button">🕐 Backdate</button>
+  <input type="datetime-local" id="corrTimeIn" class="backdate-input">
   <button class="btn btn-orange" id="addCorrBtn" disabled onclick="addCorrection()">⚡ Log correction</button>
 </div>
 
@@ -135,8 +155,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <button class="basal-toggle" id="basalToggle">Add</button>
   </div>
   <div class="basal-form" id="basalForm">
-    <input type="number" inputmode="decimal" id="basalIn" placeholder="Units">
-    <button onclick="addBasal()">Save</button>
+    <div class="basal-row">
+      <input type="number" inputmode="decimal" id="basalIn" placeholder="Units">
+      <button onclick="addBasal()">Save</button>
+    </div>
+    <button class="backdate-toggle" id="basalTimeToggle" type="button">🕐 Backdate</button>
+    <input type="datetime-local" id="basalTimeIn" class="backdate-input">
   </div>
 </div>
 <div class="card-title" style="margin-bottom:10px">🕐 Recent activity</div>
@@ -167,11 +191,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div class="card"><div class="card-title">📊 Today's Summary</div><div id="dailySummary"><div class="empty">Loading…</div></div></div>
 </div>
 
-<p class="footer">IOB: exponential model, peak ~75min, 4h duration. Correction factor: auto-calculated from your history.<br>Not medical software — personal tracking only.</p>
+<!-- SETTINGS -->
+<div class="panel" id="panel-settings">
+<div class="card">
+  <div class="card-title">🎯 Target Range</div>
+  <div class="input-row">
+    <div class="ig"><label>Low (mmol/L)</label><input type="number" inputmode="decimal" step="0.1" id="settLow"></div>
+    <div class="ig"><label>High (mmol/L)</label><input type="number" inputmode="decimal" step="0.1" id="settHigh"></div>
+  </div>
+  <div class="ig" style="margin-bottom:12px"><label>1 unit of Novorapid per __ g of carbs (optional — used until you have enough history)</label><input type="number" inputmode="decimal" id="settRatio" placeholder="e.g. 10"></div>
+  <button class="btn btn-blue" onclick="saveSettings()">Save settings</button>
+  <div id="settingsMsg"></div>
+</div>
+<div class="card">
+  <div class="card-title">📤 Export Data</div>
+  <a class="btn btn-dark" href="/api/export.csv" download style="text-decoration:none">⬇ Export CSV</a>
+</div>
+</div>
+
+<p class="footer">IOB: exponential model, peak ~75min, 4h duration. COB: linear absorption over 3h.<br>Correction factor: auto-calculated from your history. Not medical software — personal tracking only.</p>
 </div>
 
 <script>
 let boluses=[],basalDoses=[],corrections=[],chartHours=6;
+let settings={targetLow:4,targetHigh:10,carbRatio:null};
+let editingEntry=null;
 
 // Exponential insulin-action model (Loop/OpenAPS style) for Novorapid: peak activity at
 // IOB_PEAK minutes, fully absorbed by IOB_DIA minutes. Replaces a naive linear decay, which
@@ -186,12 +230,19 @@ function iobFraction(t){ // t = minutes since bolus; returns fraction of the dos
   return 1-_iobS*(1-_iobA)*((t*t/(_iobTau*IOB_DIA*(1-_iobA))-t/_iobTau-1)*Math.exp(-t/_iobTau)+1);
 }
 
+// Carbs on board: simple linear absorption over COB_DURATION minutes. Carb absorption
+// varies far more by food type than insulin action does, so a linear model is the standard
+// pragmatic default (used by most bolus calculators) rather than a tuned curve like IOB's.
+const COB_DURATION=180;
+function cobFraction(t){ if(t<=0)return 1; if(t>=COB_DURATION)return 0; return 1-t/COB_DURATION; }
+function calcCOB(){const now=Date.now();let t=0;for(const b of boluses){if(!b.carbs)continue;const e=(now-b.time)/60000;t+=b.carbs*cobFraction(e)}return t}
+
 async function checkAuth(){try{const r=await fetch('/api/auth-check');if(r.ok){showApp();return}}catch(e){}document.getElementById('loginPage').style.display='flex'}
 async function doLogin(){const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pwInput').value})});if(r.ok)showApp();else document.getElementById('loginErr').style.display='block'}
 document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 function showApp(){document.getElementById('loginPage').style.display='none';document.getElementById('appPage').style.display='block';init()}
 
-function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory()}if(t==='summary')loadDailySummary()}
+function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory()}if(t==='summary')loadDailySummary();if(t==='settings')fetchSettings()}
 
 async function api(u,o){const r=await fetch(u,o);if(r.status===401)location.reload();return r.json()}
 
@@ -199,7 +250,7 @@ async function fetchEntries(){const d=await api('/api/entries');boluses=d.boluse
 async function fetchGlucose(){
   const card=document.getElementById('gCard'),disp=document.getElementById('gDisplay');
   try{const d=await api('/api/glucose');if(d.error){card.className='glucose';disp.innerHTML=`<div style="color:var(--dim);font-size:13px;padding:10px 0">${d.error}</div>`;return}
-  let cls='ok',col='#16a34a';if(d.value<4){cls='low';col='#dc2626'}else if(d.value>10){cls='high';col='#ea580c'}
+  let cls='ok',col='#16a34a';if(d.value<settings.targetLow){cls='low';col='#dc2626'}else if(d.value>settings.targetHigh){cls='high';col='#ea580c'}
   card.className=`glucose ${cls}`;
   disp.innerHTML=`<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend||''}</span><span class="u">mmol/L</span></div><div class="g-meta">${d.trendLabel||''} · ${timeAgo(new Date(d.timestamp||d.fetchedAt).getTime())}</div>`}catch(e){card.className='glucose';disp.innerHTML='<div style="color:var(--dim);font-size:13px">Could not connect</div>'}
 }
@@ -260,10 +311,100 @@ async function loadDailySummary(){
     </div>`}catch(e){}
 }
 
-async function addBolus(){const u=parseFloat(document.getElementById('bolusIn').value),c=parseFloat(document.getElementById('carbIn').value);if(!(u>0)&&!(c>0))return;await api('/api/entries/bolus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u>0?u:0,carbs:c>0?c:null})});document.getElementById('bolusIn').value='';document.getElementById('carbIn').value='';document.getElementById('mealSuggestion').innerHTML='';document.querySelectorAll('.qc button').forEach(b=>b.classList.remove('on'));updateBolusBtn();fetchEntries();loadChart()}
-async function addBasal(){const u=parseFloat(document.getElementById('basalIn').value);if(!u||u<=0)return;await api('/api/entries/basal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u})});document.getElementById('basalIn').value='';document.getElementById('basalForm').classList.remove('vis');document.getElementById('basalToggle').textContent='Add';fetchEntries()}
-async function addCorrection(){const u=parseFloat(document.getElementById('corrUnitsIn').value),t=parseFloat(document.getElementById('corrTargetIn').value);if(!u||u<=0)return;await api('/api/entries/correction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u,predictedGlucose:isNaN(t)?null:t})});document.getElementById('corrUnitsIn').value='';document.getElementById('corrTargetIn').value='';document.getElementById('addCorrBtn').disabled=true;document.getElementById('corrSuggestion').innerHTML='';fetchEntries();loadChart()}
+async function fetchSettings(){
+  try{settings=await api('/api/settings');
+  document.getElementById('settLow').value=settings.targetLow;
+  document.getElementById('settHigh').value=settings.targetHigh;
+  document.getElementById('settRatio').value=settings.carbRatio||'';
+  }catch(e){}
+}
+async function saveSettings(){
+  const lo=parseFloat(document.getElementById('settLow').value),hi=parseFloat(document.getElementById('settHigh').value);
+  const ratio=document.getElementById('settRatio').value;
+  const msg=document.getElementById('settingsMsg');
+  const r=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetLow:lo,targetHigh:hi,carbRatio:ratio===''?null:ratio})});
+  if(r.error){msg.innerHTML=`<div class="suggest-box" style="background:var(--red-l);color:var(--red)">${r.error}</div>`;return}
+  settings=r;
+  msg.innerHTML=`<div class="suggest-box" style="background:var(--green-l);color:var(--green)">Saved.</div>`;
+  setTimeout(()=>msg.innerHTML='',2000);
+}
+
+// Backdated logging: each form has a hidden datetime-local input revealed by a "Backdate"
+// toggle. Left closed, no time is sent and the server defaults to now.
+function toLocalDatetimeValue(ts){const d=new Date(ts),pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`}
+function nowLocalDatetimeValue(){return toLocalDatetimeValue(Date.now())}
+function getEntryTime(inputId){const el=document.getElementById(inputId);if(el&&el.classList.contains('vis')&&el.value)return new Date(el.value).getTime();return undefined}
+function resetBackdate(toggleId,inputId){const t=document.getElementById(toggleId),i=document.getElementById(inputId);i.classList.remove('vis');i.value='';t.textContent='🕐 Backdate'}
+function setupBackdate(toggleId,inputId){
+  const toggle=document.getElementById(toggleId),input=document.getElementById(inputId);
+  toggle.addEventListener('click',()=>{
+    const v=input.classList.toggle('vis');
+    toggle.textContent=v?'🕐 Logging for now (tap to reset)':'🕐 Backdate';
+    if(v&&!input.value)input.value=nowLocalDatetimeValue();else if(!v)input.value='';
+  });
+}
+setupBackdate('bolusTimeToggle','bolusTimeIn');
+setupBackdate('basalTimeToggle','basalTimeIn');
+setupBackdate('corrTimeToggle','corrTimeIn');
+
+async function addBolus(){const u=parseFloat(document.getElementById('bolusIn').value),c=parseFloat(document.getElementById('carbIn').value);if(!(u>0)&&!(c>0))return;await api('/api/entries/bolus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u>0?u:0,carbs:c>0?c:null,time:getEntryTime('bolusTimeIn')})});document.getElementById('bolusIn').value='';document.getElementById('carbIn').value='';document.getElementById('mealSuggestion').innerHTML='';document.querySelectorAll('.qc button').forEach(b=>b.classList.remove('on'));resetBackdate('bolusTimeToggle','bolusTimeIn');updateBolusBtn();fetchEntries();loadChart()}
+async function addBasal(){const u=parseFloat(document.getElementById('basalIn').value);if(!u||u<=0)return;await api('/api/entries/basal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u,time:getEntryTime('basalTimeIn')})});document.getElementById('basalIn').value='';document.getElementById('basalForm').classList.remove('vis');document.getElementById('basalToggle').textContent='Add';resetBackdate('basalTimeToggle','basalTimeIn');fetchEntries()}
+async function addCorrection(){const u=parseFloat(document.getElementById('corrUnitsIn').value),t=parseFloat(document.getElementById('corrTargetIn').value);if(!u||u<=0)return;await api('/api/entries/correction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({units:u,predictedGlucose:isNaN(t)?null:t,time:getEntryTime('corrTimeIn')})});document.getElementById('corrUnitsIn').value='';document.getElementById('corrTargetIn').value='';document.getElementById('addCorrBtn').disabled=true;document.getElementById('corrSuggestion').innerHTML='';resetBackdate('corrTimeToggle','corrTimeIn');fetchEntries();loadChart()}
 async function delEntry(t,id){await api(`/api/entries/${t}/${id}`,{method:'DELETE'});fetchEntries();loadChart()}
+
+function startEdit(kind,id){editingEntry={kind,id:String(id)};render()}
+function cancelEdit(){editingEntry=null;render()}
+async function saveEdit(kind,id){
+  const body={};
+  if(kind==='bolus'){
+    const c=parseFloat(document.getElementById('editCarbs').value),u=parseFloat(document.getElementById('editUnits').value);
+    body.carbs=isNaN(c)?null:c;body.units=isNaN(u)?0:u;
+    if((!body.units||body.units<=0)&&(!body.carbs||body.carbs<=0))return;
+  } else if(kind==='basal'){
+    const u=parseFloat(document.getElementById('editUnits').value);
+    if(!u||u<=0)return;
+    body.units=u;
+  } else {
+    const u=parseFloat(document.getElementById('editUnits').value);
+    if(!u||u<=0)return;
+    body.units=u;
+    const t=parseFloat(document.getElementById('editTarget').value);
+    body.predictedGlucose=isNaN(t)?null:t;
+  }
+  const timeEl=document.getElementById('editTime');
+  if(timeEl&&timeEl.value)body.time=new Date(timeEl.value).getTime();
+  await api(`/api/entries/${kind}/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  editingEntry=null;
+  fetchEntries();loadChart();
+}
+function editFormHTML(e){
+  if(e.kind==='bolus'){
+    return `<div class="log-entry edit-entry">
+      <div class="edit-grid">
+        <div class="ig"><label>Carbs (g)</label><input type="number" inputmode="decimal" id="editCarbs" value="${e.carbs??''}"></div>
+        <div class="ig"><label>Novorapid (u)</label><input type="number" inputmode="decimal" id="editUnits" value="${e.units||''}"></div>
+      </div>
+      <div class="ig" style="margin-bottom:10px"><label>Logged at</label><input type="datetime-local" id="editTime" value="${toLocalDatetimeValue(e.time)}"></div>
+      <div class="edit-actions"><button class="btn btn-blue btn-sm" onclick="saveEdit('bolus','${e.id}')">Save</button><button class="btn btn-sm" style="background:var(--bg);color:var(--dim)" onclick="cancelEdit()">Cancel</button></div>
+    </div>`;
+  }
+  if(e.kind==='basal'){
+    return `<div class="log-entry edit-entry">
+      <div class="ig"><label>Units</label><input type="number" inputmode="decimal" id="editUnits" value="${e.units}"></div>
+      <div class="ig" style="margin-bottom:10px"><label>Logged at</label><input type="datetime-local" id="editTime" value="${toLocalDatetimeValue(e.time)}"></div>
+      <div class="edit-actions"><button class="btn btn-blue btn-sm" onclick="saveEdit('basal','${e.id}')">Save</button><button class="btn btn-sm" style="background:var(--bg);color:var(--dim)" onclick="cancelEdit()">Cancel</button></div>
+    </div>`;
+  }
+  return `<div class="log-entry edit-entry">
+    <div class="edit-grid">
+      <div class="ig"><label>Novorapid (u)</label><input type="number" inputmode="decimal" id="editUnits" value="${e.units}"></div>
+      <div class="ig"><label>Target (mmol/L)</label><input type="number" inputmode="decimal" id="editTarget" value="${e.predictedGlucose??''}"></div>
+    </div>
+    <div class="ig" style="margin-bottom:6px"><label>Logged at</label><input type="datetime-local" id="editTime" value="${toLocalDatetimeValue(e.time)}"></div>
+    <div class="edit-hint">Editing units or time resets its resolution status (it'll re-resolve automatically).</div>
+    <div class="edit-actions"><button class="btn btn-orange btn-sm" onclick="saveEdit('correction','${e.id}')">Save</button><button class="btn btn-sm" style="background:var(--bg);color:var(--dim)" onclick="cancelEdit()">Cancel</button></div>
+  </div>`;
+}
 
 // Correction suggestion
 async function updateCorrSuggestion(){
@@ -303,6 +444,7 @@ function fmtTime(ts){return new Date(ts).toLocaleString([],{weekday:'short',hour
 
 function render(){
   document.getElementById('iob').innerHTML=calcIOB().toFixed(1)+'<span class="u">u</span>';
+  document.getElementById('cob').innerHTML=calcCOB().toFixed(0)+'<span class="u">g</span>';
   const lb=boluses[0];document.getElementById('lastCarbs').innerHTML=(lb&&lb.carbs!=null?lb.carbs:'—')+'<span class="u">g</span>';
   document.getElementById('lastBolus').textContent=lb?(lb.units>0?lb.units+'u · '+timeAgo(lb.time):'Carbs only · '+timeAgo(lb.time)):'None';
   const lba=basalDoses[0];document.getElementById('lastBasal').textContent=lba?lba.units+'u · '+timeAgo(lba.time):'None';
@@ -310,11 +452,12 @@ function render(){
   const log=document.getElementById('logList');
   if(!all.length){log.innerHTML='<div class="empty">No entries yet</div>';return}
   log.innerHTML=all.map(e=>{
+    if(editingEntry&&editingEntry.kind===e.kind&&editingEntry.id===String(e.id))return editFormHTML(e);
     let label,detail='';
     if(e.kind==='bolus'){label=e.units>0?`Novorapid · ${e.units}u`:'🍬 Carbs only';if(e.carbs!=null)label+=` <span class="sub">· ${e.carbs}g</span>`}
     else if(e.kind==='basal'){label=`Lantus · ${e.units}u`}
     else{label=`⚡ Correction · ${e.units}u`;detail=e.resolved?` <span class="sub">→ ${e.actualGlucose}</span>`:(e.startGlucose?` <span class="sub">from ${e.startGlucose}</span>`:'')}
-    return `<div class="log-entry"><div class="log-left"><div class="log-dot ${e.kind}"></div><div><div class="log-primary">${label}${detail}</div><div class="log-secondary">${fmtTime(e.time)}</div></div></div><button class="log-del" onclick="delEntry('${e.kind}','${e.id}')">✕</button></div>`
+    return `<div class="log-entry"><div class="log-left"><div class="log-dot ${e.kind}"></div><div><div class="log-primary">${label}${detail}</div><div class="log-secondary">${fmtTime(e.time)}</div></div></div><div class="log-actions"><button class="log-edit" onclick="startEdit('${e.kind}','${e.id}')">✎</button><button class="log-del" onclick="delEntry('${e.kind}','${e.id}')">✕</button></div></div>`
   }).join('')
 }
 
@@ -334,7 +477,7 @@ function drawChart(data, events=[]){
 
   // Range band
   ctx.fillStyle='rgba(34,197,94,0.08)';
-  ctx.fillRect(pad.l,y(10),cW,y(4)-y(10));
+  ctx.fillRect(pad.l,y(settings.targetHigh),cW,y(settings.targetLow)-y(settings.targetHigh));
 
   // Grid
   ctx.strokeStyle='#e2e8f0';ctx.lineWidth=0.5;ctx.fillStyle='#94a3b8';ctx.font='10px sans-serif';ctx.textAlign='right';
@@ -349,7 +492,7 @@ function drawChart(data, events=[]){
   data.forEach((d,i)=>{i===0?ctx.moveTo(x(d.time),y(d.value)):ctx.lineTo(x(d.time),y(d.value))});ctx.stroke();
 
   // Glucose dots
-  data.forEach(d=>{let c='#16a34a';if(d.value<4)c='#dc2626';else if(d.value>10)c='#ea580c';ctx.fillStyle=c;ctx.beginPath();ctx.arc(x(d.time),y(d.value),2,0,Math.PI*2);ctx.fill()});
+  data.forEach(d=>{let c='#16a34a';if(d.value<settings.targetLow)c='#dc2626';else if(d.value>settings.targetHigh)c='#ea580c';ctx.fillStyle=c;ctx.beginPath();ctx.arc(x(d.time),y(d.value),2,0,Math.PI*2);ctx.fill()});
 
   // Event markers
   events.forEach(e=>{
@@ -390,7 +533,7 @@ document.getElementById('carbIn').addEventListener('keydown',e=>{if(e.key==='Ent
 document.getElementById('basalToggle').addEventListener('click',function(){const f=document.getElementById('basalForm'),v=f.classList.toggle('vis');this.textContent=v?'Cancel':'Add'});
 document.getElementById('basalIn').addEventListener('keydown',e=>{if(e.key==='Enter')addBasal()});
 
-function init(){fetchEntries();fetchGlucose();loadChart();setInterval(render,30000);setInterval(()=>{fetchGlucose();loadChart()},60000)}
+async function init(){await fetchSettings();fetchEntries();fetchGlucose();loadChart();setInterval(render,30000);setInterval(()=>{fetchGlucose();loadChart()},60000)}
 checkAuth();
 </script>
 </body>
