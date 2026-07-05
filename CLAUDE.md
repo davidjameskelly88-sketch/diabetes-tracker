@@ -104,7 +104,7 @@ Both are computed client-side in `public/index.html`, decaying independently per
 
 ### Frontend
 
-`public/index.html` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`.
+`public/index.html` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`. Hour labels on the x-axis are anchored to actual clock-hour boundaries (`x(hourBoundaryTime)`), not to wherever a data point happens to fall — the latter breaks down when readings are gapped (sensor/network lag), since two adjacent hours can each have their only representative point land right next to the boundary and render almost on top of each other.
 
 ### External integration: Apple Health
 
@@ -115,3 +115,9 @@ Both are computed client-side in `public/index.html`, decaying independently per
 Workout dedup in both paths is by matching the stored `startTime` field (`w.start` for Health Auto Export, `w.startTime` for Shortcuts) against existing `activities`.
 
 **Apple's free Shortcuts actions cannot query Workout objects at all** — "Find Health Samples" only exposes quantity/category samples (heart rate, steps, etc.), not workouts. This is a real platform limitation (confirmed via research, not a bug in this app), not something the original Shortcuts-based README instructions could have ever actually accomplished. Getting workouts into Shortcuts requires a paid third-party action (e.g. Toolbox Pro's "Get Workouts"). Because of this, `POST /api/activities/workout` (+ matching `PATCH`/`DELETE .../:id`) exists as a manual-entry fallback, surfaced as a "Log a workout" form on the Activity tab. Manually-logged workouts are flagged `manual: true` and are the only ones with a delete button in the UI (synced entries aren't locally deletable since they'd just reappear on the next sync).
+
+Without an explicit backdated time, `POST /api/activities/workout` assumes the workout *just ended* (`start = now - duration`), not that it's starting now — someone logging a completed workout is almost always doing so shortly after finishing it, and stamping it as starting now would plot it as happening in the future relative to when it actually occurred, throwing off its position on the glucose chart relative to the glucose reading at the time. Editing `duration` via `PATCH` recomputes `endTime` from the *existing* `time` (start), so it doesn't go stale relative to the new duration.
+
+### Known LibreLinkUp data lag (not a bug in this app)
+
+Follower-account data (what this app polls) can genuinely lag the primary sharer's own LibreLink app by up to 15–20 minutes, and real new readings can arrive well over 5 minutes apart even though `fetchGlucose()` polls every `POLL_MS` — this is a documented characteristic of LibreLinkUp's sync, not something fixable by polling more often (and `POLL_MS` shouldn't be lowered regardless, see above). If glucose values look "wrong" compared to the primary app, check whether the underlying reading timestamps genuinely differ before assuming a bug here.

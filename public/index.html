@@ -185,7 +185,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="ig"><label>Type</label><input type="text" id="workoutTypeIn" placeholder="e.g. Running"></div>
     <div class="ig"><label>Duration (min)</label><input type="number" inputmode="decimal" id="workoutDurIn"></div>
   </div>
-  <div class="ig" style="margin-bottom:12px"><label>Calories (optional)</label><input type="number" inputmode="decimal" id="workoutCalIn"></div>
+  <div class="ig" style="margin-bottom:8px"><label>Calories (optional)</label><input type="number" inputmode="decimal" id="workoutCalIn"></div>
+  <div style="font-size:11px;color:var(--dim);margin-bottom:12px">Logged as just finished (start time = now minus duration) unless you backdate the start time below.</div>
   <button class="backdate-toggle" id="workoutTimeToggle" type="button">🕐 Backdate</button>
   <input type="datetime-local" id="workoutTimeIn" class="backdate-input">
   <button class="btn btn-blue" id="addWorkoutBtn" disabled onclick="addWorkout()">＋ Log workout</button>
@@ -563,9 +564,19 @@ function drawChart(data, events=[]){
   ctx.strokeStyle='#e2e8f0';ctx.lineWidth=0.5;ctx.fillStyle='#94a3b8';ctx.font='10px sans-serif';ctx.textAlign='right';
   for(let v=mn;v<=mx;v+=2){ctx.beginPath();ctx.moveTo(pad.l,y(v));ctx.lineTo(W-pad.r,y(v));ctx.stroke();ctx.fillText(v,pad.l-4,y(v)+3)}
 
-  // Time labels
-  ctx.textAlign='center';const hrs=new Set();
-  data.forEach(d=>{const h=new Date(d.time).getHours();if(!hrs.has(h)){hrs.add(h);ctx.fillText(h+':00',x(d.time),H-2)}});
+  // Time labels - anchored to actual clock-hour boundaries within the visible range (not
+  // wherever a data point happens to fall). Placing a label at "the first data point seen
+  // in each hour" breaks down when readings are gapped (e.g. sensor/network lag): two
+  // adjacent hours can each have their only representative point land right next to the
+  // hour boundary, so their labels render almost on top of each other. Hour boundaries are
+  // evenly spaced by construction, so this can't happen here.
+  ctx.textAlign='center';
+  const pxPerHour=cW/(tRange/3600000);
+  const hourStep=Math.max(1,Math.ceil(40/pxPerHour));
+  const firstHourMs=Math.ceil(tMin/3600000)*3600000;
+  for(let t=firstHourMs;t<=tMax;t+=3600000*hourStep){
+    ctx.fillText(new Date(t).getHours()+':00',x(t),H-2);
+  }
 
   // Glucose line
   ctx.beginPath();ctx.strokeStyle='#2563eb';ctx.lineWidth=2;ctx.lineJoin='round';

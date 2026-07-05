@@ -825,8 +825,12 @@ app.post('/api/activities/workout',requireAuth,async(req,res)=>{
   const{workoutType,duration,calories,time}=req.body;
   if(!workoutType)return res.status(400).json({error:'Workout type required'});
   const data=await loadData();
-  const startTs=resolveEntryTime(time);
   const durMin=duration?parseFloat(duration):null;
+  // With no explicit backdated time, assume the workout just ended (the common case: logging
+  // it shortly after finishing) rather than starting now - otherwise it plots as happening
+  // in the future relative to when it actually occurred, throwing off its position on the
+  // glucose chart relative to the reading at the time.
+  const startTs=time ? resolveEntryTime(time) : Date.now()-(durMin||0)*60000;
   const entry={
     id:Date.now()+Math.random(), type:'workout', time:startTs,
     workoutType, duration:durMin, calories:calories?parseFloat(calories):null,
@@ -846,7 +850,10 @@ app.patch('/api/activities/workout/:id',requireAuth,async(req,res)=>{
   const entry=data.activities.find(a=>a.type==='workout'&&String(a.id)===req.params.id);
   if(!entry)return res.status(404).json({error:'Not found'});
   if(workoutType)entry.workoutType=workoutType;
-  if(duration!==undefined)entry.duration=(duration===''||duration==null)?null:parseFloat(duration);
+  if(duration!==undefined){
+    entry.duration=(duration===''||duration==null)?null:parseFloat(duration);
+    entry.endTime=new Date(entry.time+(entry.duration||0)*60000).toISOString();
+  }
   if(calories!==undefined)entry.calories=(calories===''||calories==null)?null:parseFloat(calories);
   if(time){
     const newTs=resolveEntryTime(time);
