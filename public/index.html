@@ -258,6 +258,17 @@ function iobFraction(t){ // t = minutes since bolus; returns fraction of the dos
   return 1-_iobS*(1-_iobA)*((t*t/(_iobTau*IOB_DIA*(1-_iobA))-t/_iobTau-1)*Math.exp(-t/_iobTau)+1);
 }
 
+// Insulin *activity* (how hard the dose is working right now) is the bell-shaped curve that
+// peaks around IOB_PEAK minutes in, as opposed to iobFraction() above which is the remaining
+// (monotonically decreasing) on-board amount. Derived as the per-minute rate of iobFraction's
+// decline rather than a separately-derived formula, so it's guaranteed consistent with the
+// IOB model actually in use. _iobActivityPeak (a 1-unit dose's peak rate) calibrates the
+// glucose-chart overlay's height so a typical dose fills a sensible fraction of it.
+function iobActivityFraction(t){ if(t<0||t>=IOB_DIA)return 0; return iobFraction(t)-iobFraction(t+1); }
+let _iobActivityPeak=0;
+for(let t=1;t<IOB_DIA;t++){const a=iobActivityFraction(t);if(a>_iobActivityPeak)_iobActivityPeak=a}
+const IOB_CHART_SCALE_UNITS=10; // a dose this size at its peak fills ~35% of the overlay height
+
 // Carbs on board: simple linear absorption over COB_DURATION minutes. Carb absorption
 // varies far more by food type than insulin action does, so a linear model is the standard
 // pragmatic default (used by most bolus calculators) rather than a tuned curve like IOB's.
@@ -576,6 +587,27 @@ function drawChart(data, events=[]){
   const firstHourMs=Math.ceil(tMin/3600000)*3600000;
   for(let t=firstHourMs;t<=tMax;t+=3600000*hourStep){
     ctx.fillText(new Date(t).getHours()+':00',x(t),H-2);
+  }
+
+  // Insulin activity overlay - filled area showing summed Novorapid activity (bell-shaped,
+  // peaking ~75min after each dose, per the same exponential model as the IOB tile), so you
+  // can see when injected insulin was actually working hardest, not just that a dose happened.
+  const doseEvents=events.filter(e=>(e.type==='bolus'&&e.units>0)||e.type==='correction');
+  if(doseEvents.length){
+    const maxHeight=cH*0.35;
+    const peakScale=_iobActivityPeak*IOB_CHART_SCALE_UNITS;
+    ctx.beginPath();
+    ctx.moveTo(x(data[0].time),pad.t+cH);
+    data.forEach(d=>{
+      let total=0;
+      doseEvents.forEach(e=>{const mins=(d.time-e.time)/60000;total+=e.units*iobActivityFraction(mins)});
+      const hFrac=Math.min(1,total/peakScale);
+      ctx.lineTo(x(d.time),pad.t+cH-hFrac*maxHeight);
+    });
+    ctx.lineTo(x(data[data.length-1].time),pad.t+cH);
+    ctx.closePath();
+    ctx.fillStyle='rgba(37,99,235,0.15)';
+    ctx.fill();
   }
 
   // Glucose line

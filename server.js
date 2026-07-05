@@ -282,21 +282,55 @@ async function analysePatterns() {
     }
   }
 
-  // 3. Post-exercise glucose impact
-  const workouts = activities.filter(a => a.type === 'workout' && a.endTime);
+  // 3. Post-exercise glucose impact - segmented into before/during/after. A single
+  // before-vs-after delta misses what actually happens *during* the activity (e.g. glucose
+  // plummeting mid-walk then recovering afterward would net out looking like barely any
+  // change at all). "Before" is anchored to the workout's start, not its end - the previous
+  // version's 30min-before-*end* window was actually sampling the tail of the workout itself
+  // for anything longer than 30min, not a true pre-exercise baseline.
+  const workouts = activities.filter(a => a.type === 'workout' && a.startTime && a.endTime);
   for (const w of workouts.slice(-10)) {
+    const startTs = new Date(w.startTime).getTime();
     const endTs = new Date(w.endTime).getTime();
-    const pre = glucoseHistory.filter(g => g.time >= endTs - 30*60000 && g.time <= endTs);
-    const post = glucoseHistory.filter(g => g.time >= endTs + 30*60000 && g.time <= endTs + 180*60000);
-    if (pre.length > 0 && post.length > 0) {
-      const preMean = pre.reduce((s,r) => s+r.value, 0) / pre.length;
-      const postMean = post.reduce((s,r) => s+r.value, 0) / post.length;
-      const delta = postMean - preMean;
-      if (Math.abs(delta) > 0.5) {
-        const hr = w.avgHeartRate ? ` (avg HR ${w.avgHeartRate}bpm${w.maxHeartRate?', max '+w.maxHeartRate:''})` : '';
-        insights.push({ type: delta < 0 ? 'positive' : 'warning',
-          text: `After "${w.workoutType||'exercise'}" (${w.duration||'?'}min)${hr}, glucose ${delta<0?'dropped':'rose'} by ${Math.abs(delta).toFixed(1)} mmol/L over ~2.5h.`, time: w.endTime });
+    const before = glucoseHistory.filter(g => g.time >= startTs - 30*60000 && g.time < startTs);
+    const during = glucoseHistory.filter(g => g.time >= startTs && g.time <= endTs);
+    const after = glucoseHistory.filter(g => g.time > endTs + 30*60000 && g.time <= endTs + 180*60000);
+    if (before.length === 0 || during.length === 0) continue;
+
+    const beforeAvg = before.reduce((s,r) => s+r.value, 0) / before.length;
+    const duringMin = Math.min(...during.map(g => g.value));
+    const duringMax = Math.max(...during.map(g => g.value));
+    const duringLast = during[during.length - 1].value;
+    // The more pronounced swing during the activity itself, relative to baseline - a
+    // workout can swing either way, and the bigger deviation is the more relevant one.
+    const dropDuring = beforeAvg - duringMin;
+    const riseDuring = duringMax - beforeAvg;
+    const duringIsDrop = dropDuring >= riseDuring;
+    const duringDelta = duringIsDrop ? dropDuring : riseDuring;
+
+    let afterDelta = null;
+    if (after.length > 0) {
+      const afterAvg = after.reduce((s,r) => s+r.value, 0) / after.length;
+      afterDelta = afterAvg - duringLast;
+    }
+
+    if (duringDelta > 0.5 || (afterDelta != null && Math.abs(afterDelta) > 0.5)) {
+      const hr = w.avgHeartRate ? ` (avg HR ${w.avgHeartRate}bpm${w.maxHeartRate?', max '+w.maxHeartRate:''})` : '';
+      let text = `During "${w.workoutType||'exercise'}" (${w.duration?Math.round(w.duration):'?'}min)${hr}, glucose ${duringIsDrop?'dropped':'rose'} ${duringDelta.toFixed(1)} mmol/L`;
+      if (afterDelta != null && Math.abs(afterDelta) > 0.5) {
+        text += `, then ${afterDelta<0?'dropped':'rose'} a further ${Math.abs(afterDelta).toFixed(1)} mmol/L over the following ~2.5h`;
+      } else if (afterDelta != null) {
+        text += `, staying fairly steady afterward`;
       }
+      text += '.';
+      // A drop during exercise, or a delayed drop afterward, is the actual hypo-risk signal -
+      // a rise during exercise (adrenaline/glycogen response) isn't itself concerning.
+      let type;
+      if (afterDelta != null && afterDelta < -0.8) type = 'warning';
+      else if (duringIsDrop && duringDelta > 0.8) type = 'warning';
+      else if (duringIsDrop) type = 'positive';
+      else type = 'info';
+      insights.push({ type, text, time: w.endTime });
     }
   }
 
