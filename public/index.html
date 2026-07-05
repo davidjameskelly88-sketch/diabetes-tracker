@@ -36,6 +36,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .btn-orange{background:var(--orange);color:#fff}.btn-sm{width:auto;padding:8px 16px;font-size:12px}
 .basal-header{display:flex;justify-content:space-between;align-items:center}
 .basal-toggle{font-size:12px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none}
+#basalCard{transition:background-color .3s,border-color .3s}
+.basal-status{font-size:13px;font-weight:600;margin-top:8px;color:var(--dim)}
+#basalCard.basal-due-soon{border-color:var(--orange)}
+#basalCard.basal-due-soon .basal-status{color:var(--orange)}
+#basalCard.basal-overdue{border-color:var(--red);background:var(--red-l);animation:basal-pulse 2s ease-in-out infinite}
+#basalCard.basal-overdue .basal-status{color:var(--red);font-size:14px}
+@keyframes basal-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.25)}50%{box-shadow:0 0 0 6px rgba(220,38,38,0)}}
 .basal-form{display:none;margin-top:12px;flex-direction:column;gap:10px}.basal-form.vis{display:flex}
 .basal-row{display:flex;gap:10px}
 .basal-row input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:14px;outline:none;background:var(--bg)}
@@ -150,11 +157,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <button class="btn btn-orange" id="addCorrBtn" disabled onclick="addCorrection()">⚡ Log correction</button>
 </div>
 
-<div class="card">
+<div class="card" id="basalCard">
   <div class="basal-header">
-    <div class="card-title" style="margin-bottom:0">Log basal (Lantus)</div>
+    <div class="card-title" style="margin-bottom:0">💉 Log basal (Lantus)</div>
     <button class="basal-toggle" id="basalToggle">Add</button>
   </div>
+  <div class="basal-status" id="basalStatus"></div>
   <div class="basal-form" id="basalForm">
     <div class="basal-row">
       <input type="number" inputmode="decimal" id="basalIn" placeholder="Units">
@@ -233,6 +241,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <div style="font-size:11px;color:var(--dim);margin-top:8px">Used only for context (BMI, dose-per-kg) in the Insulin Health Check on the Insights tab — never used to adjust any suggestion, since self-estimated body fat % isn't precise enough to build calculations on.</div>
 </div>
 <div class="card">
+  <div class="card-title">🍽️ Meal Presets</div>
+  <div id="presetList"></div>
+  <div class="input-row">
+    <div class="ig"><label>Name</label><input type="text" id="presetNameIn" placeholder="e.g. Coffee"></div>
+    <div class="ig"><label>Carbs (g)</label><input type="number" inputmode="decimal" id="presetCarbsIn" placeholder="e.g. 10"></div>
+  </div>
+  <button class="btn btn-blue" onclick="addPreset()">＋ Add preset</button>
+</div>
+<div class="card">
   <div class="card-title">📤 Export Data</div>
   <a class="btn btn-dark" href="/api/export.csv" download style="text-decoration:none">⬇ Export CSV</a>
 </div>
@@ -282,7 +299,7 @@ async function doLogin(){const r=await fetch('/api/login',{method:'POST',headers
 document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 function showApp(){document.getElementById('loginPage').style.display='none';document.getElementById('appPage').style.display='block';init()}
 
-function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory();loadInsulinHealth()}if(t==='summary')loadDailySummary();if(t==='settings')fetchSettings()}
+function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory();loadInsulinHealth()}if(t==='summary')loadDailySummary();if(t==='settings'){fetchSettings();loadPresetManager()}}
 
 async function api(u,o){const r=await fetch(u,o);if(r.status===401)location.reload();return r.json()}
 
@@ -408,6 +425,24 @@ async function saveSettings(){
   msg.innerHTML=`<div class="suggest-box" style="background:var(--green-l);color:var(--green)">Saved.</div>`;
   setTimeout(()=>msg.innerHTML='',2000);
 }
+
+async function loadPresetManager(){
+  const el=document.getElementById('presetList');
+  try{
+    const presets=await api('/api/meal-presets');
+    if(!presets.length){el.innerHTML='<div class="empty">No presets yet</div>';return}
+    el.innerHTML=presets.map(p=>`<div class="log-entry"><div class="log-left"><div><div class="log-primary">${p.name}</div><div class="log-secondary">${p.carbs}g</div></div></div><button class="log-del" onclick="delPreset('${p.id}')">✕</button></div>`).join('');
+  }catch(e){el.innerHTML=''}
+}
+async function addPreset(){
+  const name=document.getElementById('presetNameIn').value.trim();
+  const carbs=parseFloat(document.getElementById('presetCarbsIn').value);
+  if(!name||!carbs||carbs<=0)return;
+  await api('/api/meal-presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,carbs})});
+  document.getElementById('presetNameIn').value='';document.getElementById('presetCarbsIn').value='';
+  loadPresetManager();loadMealPresets();
+}
+async function delPreset(id){await api(`/api/meal-presets/${id}`,{method:'DELETE'});loadPresetManager();loadMealPresets()}
 
 // Backdated logging: each form has a hidden datetime-local input revealed by a "Backdate"
 // toggle. Left closed, no time is sent and the server defaults to now.
@@ -551,12 +586,32 @@ function calcIOB(){const now=Date.now();let t=0;for(const b of boluses){const e=
 function timeAgo(ts){const d=Math.floor((Date.now()-ts)/60000);if(d<1)return'just now';if(d<60)return d+'m ago';const h=Math.floor(d/60),m=d%60;if(h<24)return h+'h '+m+'m ago';return Math.floor(h/24)+'d ago'}
 function fmtTime(ts){return new Date(ts).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'})}
 
+// Basal (Lantus) is once every 24h - surface a countdown, and make the card impossible to
+// miss once overdue (red pulsing border/background) rather than a plain "last dose" readout.
+function updateBasalStatus(){
+  const card=document.getElementById('basalCard'),statusEl=document.getElementById('basalStatus');
+  card.classList.remove('basal-due-soon','basal-overdue');
+  const lba=basalDoses[0];
+  if(!lba){statusEl.textContent='No basal logged yet';return}
+  const hoursLeft=24-(Date.now()-lba.time)/3600000;
+  if(hoursLeft>0){
+    const h=Math.floor(hoursLeft),m=Math.round((hoursLeft-h)*60);
+    statusEl.textContent=`Next dose due in ${h}h ${m}m`;
+    if(hoursLeft<=2)card.classList.add('basal-due-soon');
+  } else {
+    const overdue=-hoursLeft,h=Math.floor(overdue),m=Math.round((overdue-h)*60);
+    statusEl.textContent=`⚠️ Overdue by ${h}h ${m}m`;
+    card.classList.add('basal-overdue');
+  }
+}
+
 function render(){
   document.getElementById('iob').innerHTML=calcIOB().toFixed(1)+'<span class="u">u</span>';
   document.getElementById('cob').innerHTML=calcCOB().toFixed(0)+'<span class="u">g</span>';
   const lb=boluses[0];document.getElementById('lastCarbs').innerHTML=(lb&&lb.carbs!=null?lb.carbs:'—')+'<span class="u">g</span>';
   document.getElementById('lastBolus').textContent=lb?(lb.units>0?lb.units+'u · '+timeAgo(lb.time):'Carbs only · '+timeAgo(lb.time)):'None';
   const lba=basalDoses[0];document.getElementById('lastBasal').textContent=lba?lba.units+'u · '+timeAgo(lba.time):'None';
+  updateBasalStatus();
   const all=[...boluses.map(b=>({...b,kind:'bolus'})),...basalDoses.map(b=>({...b,kind:'basal'})),...corrections.map(c=>({...c,kind:'correction'}))].sort((a,b)=>b.time-a.time).slice(0,20);
   const log=document.getElementById('logList');
   if(!all.length){log.innerHTML='<div class="empty">No entries yet</div>';return}
@@ -659,12 +714,24 @@ function drawChart(data, events=[]){
 
 // Chart range buttons
 const rangeEl=document.getElementById('chartRange');
-[6,12,24].forEach(h=>{const b=document.createElement('button');b.textContent=h+'h';if(h===chartHours)b.classList.add('on');
+[3,6,12,24].forEach(h=>{const b=document.createElement('button');b.textContent=h+'h';if(h===chartHours)b.classList.add('on');
 b.onclick=()=>{chartHours=h;document.querySelectorAll('.chart-range button').forEach(x=>x.classList.remove('on'));b.classList.add('on');loadChart()};rangeEl.appendChild(b)});
 
-// Quick carbs
-const qcEl=document.getElementById('qc');
-[15,30,45,60,75,90].forEach(c=>{const b=document.createElement('button');b.textContent=c+'g';b.onclick=()=>{document.getElementById('carbIn').value=c;document.querySelectorAll('.qc button').forEach(x=>x.classList.remove('on'));b.classList.add('on');updateBolusBtn();updateMealSuggestion()};qcEl.appendChild(b)});
+// Meal presets - the user's own regular meals (e.g. "Coffee" = 10g) instead of generic
+// round-number carb amounts. Re-fetched/re-rendered whenever Settings adds or removes one.
+let mealPresets=[];
+async function loadMealPresets(){
+  try{mealPresets=await api('/api/meal-presets')}catch(e){mealPresets=[]}
+  const qcEl=document.getElementById('qc');
+  qcEl.innerHTML='';
+  if(!mealPresets.length){qcEl.innerHTML='<div class="empty" style="padding:8px 0">No meal presets yet — add your regulars in Settings</div>';return}
+  mealPresets.forEach(p=>{
+    const b=document.createElement('button');
+    b.textContent=`${p.name} (${p.carbs}g)`;
+    b.onclick=()=>{document.getElementById('carbIn').value=p.carbs;document.querySelectorAll('.qc button').forEach(x=>x.classList.remove('on'));b.classList.add('on');updateBolusBtn();updateMealSuggestion()};
+    qcEl.appendChild(b);
+  });
+}
 
 document.getElementById('bolusIn').addEventListener('input',updateBolusBtn);
 document.getElementById('bolusIn').addEventListener('keydown',e=>{if(e.key==='Enter')addBolus()});
@@ -673,7 +740,7 @@ document.getElementById('carbIn').addEventListener('keydown',e=>{if(e.key==='Ent
 document.getElementById('basalToggle').addEventListener('click',function(){const f=document.getElementById('basalForm'),v=f.classList.toggle('vis');this.textContent=v?'Cancel':'Add'});
 document.getElementById('basalIn').addEventListener('keydown',e=>{if(e.key==='Enter')addBasal()});
 
-async function init(){await fetchSettings();fetchEntries();fetchGlucose();loadChart();setInterval(render,30000);setInterval(()=>{fetchGlucose();loadChart()},60000)}
+async function init(){await fetchSettings();fetchEntries();fetchGlucose();loadChart();loadMealPresets();setInterval(render,30000);setInterval(()=>{fetchGlucose();loadChart()},60000)}
 checkAuth();
 </script>
 </body>

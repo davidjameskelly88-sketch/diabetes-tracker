@@ -101,6 +101,10 @@ The glucose chart's insulin-activity overlay (`iobActivityFraction()` in `drawCh
 
 `heightCm`/`weightKg`/`sex`/`bodyFatPct` (Settings tab "Body Profile" card) are stored purely as context for the Insulin Health Check below (BMI, dose-per-kg) — **never read by any suggestion or calculation elsewhere** (`suggestMealDose`, correction factor, etc.). This is a deliberate boundary: self-estimated body fat % in particular isn't precise enough to weight into anything without giving false confidence. If you're tempted to use these fields for more than display, reconsider.
 
+### Meal presets
+
+`data.mealPresets` (`{id, name, carbs}`, `GET`/`POST /api/meal-presets`, `DELETE /api/meal-presets/:id`) are the user's own regular meals (defaults to just `Coffee` = 10g), shown as quick-select buttons on the Log a meal card instead of generic round-number carb amounts (which the actual user of this app doesn't use) — tapping one fills the carbs field the same way the old hardcoded buttons did. Managed from the Settings tab; `loadMealPresets()` (Track tab buttons) and `loadPresetManager()` (Settings tab list) are separate render functions but both re-fetch from the same endpoint, so adding/removing a preset in Settings is reflected on Track next time either runs.
+
 ### Insulin Health Check
 
 `checkInsulinHealth()` (backing `GET /api/insulin-health`, shown on the Insights tab) reports standard clinical-style dose metrics over the trailing 7 days: Total Daily Dose (TDD = bolus + correction + basal), TDD/kg (needs `weightKg`), bolus:basal split, time-in-range, and BMI (needs `heightCm`+`weightKg`). `periodStats()` computes these for an arbitrary window; the function calls it twice (this week vs. the prior week) and emits a plain-language note for each metric that moved meaningfully (TDD ±2u/day, TIR ±5pp, bolus share ±8pp) — silence on a metric means it didn't move enough to be worth mentioning, not that it's broken. Requires ≥20 glucose readings in the trailing week before returning anything (`available: false` otherwise), matching `analysePatterns()`'s data-sufficiency bar.
@@ -112,6 +116,8 @@ The glucose chart's insulin-activity overlay (`iobActivityFraction()` in `drawCh
 ### Frontend
 
 `public/index.html` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`. Hour labels on the x-axis are anchored to actual clock-hour boundaries (`x(hourBoundaryTime)`), not to wherever a data point happens to fall — the latter breaks down when readings are gapped (sensor/network lag), since two adjacent hours can each have their only representative point land right next to the boundary and render almost on top of each other.
+
+`updateBasalStatus()` (called from `render()`, so it ticks every 30s independent of any refetch) shows a countdown to the next Lantus dose (24h since the last one) and switches the whole basal card into a pulsing red `.basal-overdue` state once that window has passed — deliberately more attention-grabbing than the rest of the UI, since a missed basal dose matters more than most other logging gaps.
 
 ### External integration: Apple Health
 

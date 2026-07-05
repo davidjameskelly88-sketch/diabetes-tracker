@@ -44,7 +44,10 @@ const UPSTASH_KEY = 'diabetes-tracker-data';
 // idealTarget is the single glucose value corrections/meal suggestions aim for (distinct from
 // targetLow/targetHigh, which are the wider range used for time-in-range/color-coding).
 const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, idealTarget: 7.0, carbRatio: null, heightCm: null, weightKg: null, sex: null, bodyFatPct: null };
-const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS } });
+// Meal presets are the user's own regular meals (e.g. "Coffee" = 10g), replacing generic
+// round-number quick-carb buttons with ones that actually match what they eat.
+const DEFAULT_MEAL_PRESETS = [{ id: 1, name: 'Coffee', carbs: 10 }];
+const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS }, mealPresets: DEFAULT_MEAL_PRESETS.map(p=>({...p})) });
 
 const DATA_DIR = fs.existsSync(path.join(__dirname, '.data'))
   ? path.join(__dirname, '.data') : __dirname;
@@ -54,6 +57,7 @@ function backfill(d) {
   if (!d.corrections) d.corrections = [];
   if (!d.settings) d.settings = { ...DEFAULT_SETTINGS };
   else d.settings = { ...DEFAULT_SETTINGS, ...d.settings };
+  if (!d.mealPresets) d.mealPresets = DEFAULT_MEAL_PRESETS.map(p=>({...p}));
   return d;
 }
 
@@ -805,6 +809,25 @@ app.post('/api/settings',requireAuth,async(req,res)=>{
   if(sex!==undefined)data.settings.sex=sex||null;
   await saveData(data);
   res.json(data.settings);
+});
+
+// Meal presets - the user's own regular meals (e.g. "Coffee" = 10g), shown as quick-select
+// buttons on the Log a meal card instead of generic round-number carb amounts.
+app.get('/api/meal-presets',requireAuth,async(req,res)=>{res.json((await loadData()).mealPresets||[])});
+app.post('/api/meal-presets',requireAuth,async(req,res)=>{
+  const{name,carbs}=req.body;
+  const c=parseFloat(carbs);
+  if(!name||!name.trim())return res.status(400).json({error:'Name required'});
+  if(isNaN(c)||c<=0)return res.status(400).json({error:'Invalid carbs'});
+  const data=await loadData();
+  const entry={id:Date.now(),name:name.trim(),carbs:c};
+  data.mealPresets.push(entry);
+  await saveData(data);res.json(entry);
+});
+app.delete('/api/meal-presets/:id',requireAuth,async(req,res)=>{
+  const data=await loadData();
+  data.mealPresets=data.mealPresets.filter(p=>String(p.id)!==req.params.id);
+  await saveData(data);res.json({ok:true});
 });
 
 // Health / Activity
