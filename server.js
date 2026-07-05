@@ -41,7 +41,9 @@ const UPSTASH_KEY = 'diabetes-tracker-data';
 // carbRatio = grams of carbs per 1 unit. heightCm/weightKg/sex/bodyFatPct are stored for
 // context (BMI, dose-per-kg) only - never used to weight any suggestion or calculation,
 // since self-estimated body fat % in particular isn't precise enough to build logic on.
-const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, carbRatio: null, heightCm: null, weightKg: null, sex: null, bodyFatPct: null };
+// idealTarget is the single glucose value corrections/meal suggestions aim for (distinct from
+// targetLow/targetHigh, which are the wider range used for time-in-range/color-coding).
+const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, idealTarget: 7.0, carbRatio: null, heightCm: null, weightKg: null, sex: null, bodyFatPct: null };
 const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS } });
 
 const DATA_DIR = fs.existsSync(path.join(__dirname, '.data'))
@@ -371,13 +373,34 @@ function timeBucket(h) { return h<5?'night':h<11?'morning':h<17?'afternoon':h<22
 
 async function suggestMealDose(carbs) {
   const data = await loadData();
-  const { targetLow, targetHigh, carbRatio } = data.settings;
+  const { targetLow, targetHigh, idealTarget, carbRatio } = data.settings;
   const targetMid = (targetLow + targetHigh) / 2;
+
+  const resolvedCorr = data.corrections.filter(c => c.resolved && c.dropPerUnit != null && !c.carbInterference);
+  const correctionFactor = resolvedCorr.length >= 3
+    ? resolvedCorr.reduce((s,c) => s + c.dropPerUnit, 0) / resolvedCorr.length : null;
+
+  // Correction add-on: if currently above the ideal target, fold in extra units on top of
+  // whatever the carb-coverage suggestion is - mirrors how a real bolus calculator combines a
+  // "carb bolus" with a "correction bolus" into one recommendation, applied uniformly below
+  // regardless of which suggestion path (history-based or manual-ratio fallback) is used.
+  const currentGlucose = (glucoseCache && !glucoseCache.error) ? glucoseCache.value : null;
+  let correctionAddOn = 0, correctionNote = null;
+  if (currentGlucose != null && idealTarget != null && correctionFactor && currentGlucose > idealTarget) {
+    correctionAddOn = (currentGlucose - idealTarget) / correctionFactor;
+    correctionNote = `+${correctionAddOn.toFixed(1)}u correction included since you're currently ${currentGlucose} mmol/L (${(currentGlucose-idealTarget).toFixed(1)} above your ${idealTarget} target).`;
+  }
+  const combine = (baseUnits, note) => ({
+    total: baseUnits != null ? parseFloat((baseUnits + correctionAddOn).toFixed(1)) : null,
+    combinedNote: [note, correctionNote].filter(Boolean).join(' ') || null,
+  });
+
   const meals = data.boluses.filter(b => b.units > 0 && b.carbs > 0);
   if (meals.length < 3) {
     if (carbRatio) {
-      return { suggestion: parseFloat((carbs / carbRatio).toFixed(1)), basedOn: 0,
-        message: `Using your manual ratio (1u per ${carbRatio}g) — not enough history yet for a personalised suggestion.` };
+      const { total, combinedNote } = combine(carbs / carbRatio,
+        `Using your manual ratio (1u per ${carbRatio}g) — not enough history yet for a personalised suggestion.`);
+      return { suggestion: total, basedOn: 0, note: combinedNote };
     }
     return { suggestion: null, basedOn: meals.length, message: 'Log a few more meals with insulin to get personalised suggestions.' };
   }
@@ -386,10 +409,6 @@ async function suggestMealDose(carbs) {
   const nearExercise = t => data.activities.some(a =>
     a.type === 'workout' && a.endTime && Math.abs(new Date(a.endTime).getTime() - t) < 180 * 60000);
   const nowNearExercise = nearExercise(Date.now());
-
-  const resolvedCorr = data.corrections.filter(c => c.resolved && c.dropPerUnit != null && !c.carbInterference);
-  const correctionFactor = resolvedCorr.length >= 3
-    ? resolvedCorr.reduce((s,c) => s + c.dropPerUnit, 0) / resolvedCorr.length : null;
 
   const scored = meals.map(m => {
     const carbDiff = Math.abs(m.carbs - carbs) / Math.max(m.carbs, carbs);
@@ -410,8 +429,9 @@ async function suggestMealDose(carbs) {
   const totalWeight = scored.reduce((s,x) => s + x.weight, 0);
   if (!scored.length || totalWeight < 0.5) {
     if (carbRatio) {
-      return { suggestion: parseFloat((carbs / carbRatio).toFixed(1)), basedOn: 0,
-        message: `Using your manual ratio (1u per ${carbRatio}g) — not enough similar meals logged for this carb amount.` };
+      const { total, combinedNote } = combine(carbs / carbRatio,
+        `Using your manual ratio (1u per ${carbRatio}g) — not enough similar meals logged for this carb amount.`);
+      return { suggestion: total, basedOn: 0, note: combinedNote };
     }
     return { suggestion: null, basedOn: meals.length, message: 'Not enough similar meals logged yet for this carb amount.' };
   }
@@ -439,7 +459,8 @@ async function suggestMealDose(carbs) {
     }
   }
 
-  return { suggestion: parseFloat(suggestedUnits.toFixed(1)), basedOn: scored.length, note };
+  const { total, combinedNote } = combine(suggestedUnits, note);
+  return { suggestion: total, basedOn: scored.length, note: combinedNote };
 }
 
 // ─── Backdated logging helpers ─────────────────────────────────────────
@@ -730,9 +751,17 @@ app.get('/api/correction-factor',requireAuth,async(req,res)=>{
   const data=await loadData();
   const resolved=data.corrections.filter(c=>c.resolved&&c.dropPerUnit!=null&&!c.carbInterference);
   const recentCarbs=data.boluses.filter(b=>b.carbs>0&&b.time>Date.now()-120*60000).reduce((s,b)=>s+b.carbs,0)||null;
-  if(resolved.length<3) return res.json({factor:null,count:resolved.length,message:'Need at least 3 resolved corrections',recentCarbs});
+  const currentGlucose=(glucoseCache&&!glucoseCache.error)?glucoseCache.value:null;
+  const{idealTarget}=data.settings;
+  if(resolved.length<3) return res.json({factor:null,count:resolved.length,message:'Need at least 3 resolved corrections',recentCarbs,currentGlucose,idealTarget,suggestedUnits:null});
   const factor=resolved.reduce((s,c)=>s+c.dropPerUnit,0)/resolved.length;
-  res.json({factor:parseFloat(factor.toFixed(2)),count:resolved.length,recentCarbs});
+  // Proactively suggest a correction dose from how far above the ideal target you are right
+  // now, rather than only predicting the outcome of a unit amount you've already typed in.
+  let suggestedUnits=null;
+  if(currentGlucose!=null&&idealTarget!=null){
+    suggestedUnits=currentGlucose>idealTarget?Math.round(((currentGlucose-idealTarget)/factor)*2)/2:0;
+  }
+  res.json({factor:parseFloat(factor.toFixed(2)),count:resolved.length,recentCarbs,currentGlucose,idealTarget,suggestedUnits});
 });
 
 // Settings (target range, manual insulin:carb ratio)
@@ -741,12 +770,16 @@ app.get('/api/settings',requireAuth,async(req,res)=>{
   res.json(data.settings);
 });
 app.post('/api/settings',requireAuth,async(req,res)=>{
-  const{targetLow,targetHigh,carbRatio,heightCm,weightKg,sex,bodyFatPct}=req.body;
+  const{targetLow,targetHigh,idealTarget,carbRatio,heightCm,weightKg,sex,bodyFatPct}=req.body;
   const data=await loadData();
   if(targetLow!=null&&targetHigh!=null){
     const lo=parseFloat(targetLow),hi=parseFloat(targetHigh);
     if(isNaN(lo)||isNaN(hi)||lo<=0||hi<=lo)return res.status(400).json({error:'Invalid target range'});
     data.settings.targetLow=lo;data.settings.targetHigh=hi;
+  }
+  if(idealTarget!==undefined){
+    if(idealTarget===null||idealTarget===''){data.settings.idealTarget=null}
+    else{const n=parseFloat(idealTarget);if(isNaN(n)||n<=0||n>20)return res.status(400).json({error:'Invalid ideal target'});data.settings.idealTarget=n}
   }
   if(carbRatio!==undefined){
     if(carbRatio===null||carbRatio===''){data.settings.carbRatio=null}

@@ -214,6 +214,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="ig"><label>Low (mmol/L)</label><input type="number" inputmode="decimal" step="0.1" id="settLow"></div>
     <div class="ig"><label>High (mmol/L)</label><input type="number" inputmode="decimal" step="0.1" id="settHigh"></div>
   </div>
+  <div class="ig"><label>Ideal target (mmol/L) — what corrections and meal suggestions aim for</label><input type="number" inputmode="decimal" step="0.1" id="settIdeal" placeholder="e.g. 5"></div>
   <div class="ig" style="margin-bottom:12px"><label>1 unit of Novorapid per __ g of carbs (optional — used until you have enough history)</label><input type="number" inputmode="decimal" id="settRatio" placeholder="e.g. 10"></div>
   <button class="btn btn-blue" onclick="saveSettings()">Save settings</button>
   <div id="settingsMsg"></div>
@@ -292,7 +293,9 @@ async function fetchGlucose(){
   let cls='ok',col='#16a34a';if(d.value<settings.targetLow){cls='low';col='#dc2626'}else if(d.value>settings.targetHigh){cls='high';col='#ea580c'}
   card.className=`glucose ${cls}`;
   const deltaHtml=d.delta!=null?`<div class="g-delta">${d.delta>0?'+':''}${d.delta} (${d.deltaMinutes}m)</div>`:'';
-  disp.innerHTML=`${deltaHtml}<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend||''}</span><span class="u">mmol/L</span></div><div class="g-meta">${d.trendLabel||''} · ${timeAgo(new Date(d.timestamp||d.fetchedAt).getTime())}</div>`}catch(e){card.className='glucose';disp.innerHTML='<div style="color:var(--dim);font-size:13px">Could not connect</div>'}
+  disp.innerHTML=`${deltaHtml}<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend||''}</span><span class="u">mmol/L</span></div><div class="g-meta">${d.trendLabel||''} · ${timeAgo(new Date(d.timestamp||d.fetchedAt).getTime())}</div>`;
+  updateCorrSuggestion(); // keep the correction suggestion current as glucose changes, not just on typing
+  }catch(e){card.className='glucose';disp.innerHTML='<div style="color:var(--dim);font-size:13px">Could not connect</div>'}
 }
 
 async function loadChart(){
@@ -381,6 +384,7 @@ async function fetchSettings(){
   try{settings=await api('/api/settings');
   document.getElementById('settLow').value=settings.targetLow;
   document.getElementById('settHigh').value=settings.targetHigh;
+  document.getElementById('settIdeal').value=settings.idealTarget||'';
   document.getElementById('settRatio').value=settings.carbRatio||'';
   document.getElementById('settHeight').value=settings.heightCm||'';
   document.getElementById('settWeight').value=settings.weightKg||'';
@@ -390,12 +394,13 @@ async function fetchSettings(){
 }
 async function saveSettings(){
   const lo=parseFloat(document.getElementById('settLow').value),hi=parseFloat(document.getElementById('settHigh').value);
+  const ideal=document.getElementById('settIdeal').value;
   const ratio=document.getElementById('settRatio').value;
   const height=document.getElementById('settHeight').value,weight=document.getElementById('settWeight').value;
   const sex=document.getElementById('settSex').value,bodyFat=document.getElementById('settBodyFat').value;
   const msg=document.getElementById('settingsMsg');
   const r=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-    targetLow:lo,targetHigh:hi,carbRatio:ratio===''?null:ratio,
+    targetLow:lo,targetHigh:hi,idealTarget:ideal===''?null:ideal,carbRatio:ratio===''?null:ratio,
     heightCm:height===''?null:height,weightKg:weight===''?null:weight,sex:sex===''?null:sex,bodyFatPct:bodyFat===''?null:bodyFat,
   })});
   if(r.error){msg.innerHTML=`<div class="suggest-box" style="background:var(--red-l);color:var(--red)">${r.error}</div>`;return}
@@ -500,17 +505,29 @@ function editFormHTML(e){
 
 // Correction suggestion
 async function updateCorrSuggestion(){
-  const u=parseFloat(document.getElementById('corrUnitsIn').value);
+  const uRaw=document.getElementById('corrUnitsIn').value;
+  const u=parseFloat(uRaw);
   const el=document.getElementById('corrSuggestion');
-  if(!u||u<=0){el.innerHTML='';return}
   try{const r=await api('/api/correction-factor');
   let html='';
-  if(r.factor){const drop=(r.factor*u).toFixed(1);html+=`<div class="suggest-box">Based on ${r.count} previous corrections, ${u}u typically drops glucose by ~${drop} mmol/L (${r.factor.toFixed(1)}/unit)</div>`}
-  else{html+=`<div class="suggest-box">Log ${3-r.count} more corrections to get a personalised prediction</div>`}
+  // Proactive suggestion from how far above the ideal target you are right now - shown even
+  // before typing anything, with a one-tap "Use" to fill the units field.
+  if(r.suggestedUnits!=null){
+    if(r.suggestedUnits>0){
+      html+=`<div class="suggest-box">Suggested: ${r.suggestedUnits}u (currently ${r.currentGlucose} mmol/L, ${(r.currentGlucose-r.idealTarget).toFixed(1)} above your ${r.idealTarget} target)${uRaw===''?` <button type="button" onclick="useCorrSuggestion(${r.suggestedUnits})" style="width:auto;padding:3px 10px;margin-left:4px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-size:11px;font-weight:600;cursor:pointer">Use</button>`:''}</div>`;
+    } else {
+      html+=`<div class="suggest-box">You're at ${r.currentGlucose} mmol/L, at or below your ${r.idealTarget} target — no correction needed.</div>`;
+    }
+  }
+  if(u&&u>0){
+    if(r.factor){const drop=(r.factor*u).toFixed(1);html+=`<div class="suggest-box">Based on ${r.count} previous corrections, ${u}u typically drops glucose by ~${drop} mmol/L (${r.factor.toFixed(1)}/unit)</div>`}
+    else{html+=`<div class="suggest-box">Log ${3-r.count} more corrections to get a personalised prediction</div>`}
+  }
   if(r.recentCarbs)html+=`<div class="suggest-box" style="background:var(--orange-l);color:#c2410c">⚠️ ${r.recentCarbs}g carbs logged in the last 2h — this correction's effect may be less predictable</div>`;
   el.innerHTML=html;
   }catch(e){el.innerHTML=''}
 }
+function useCorrSuggestion(u){const el=document.getElementById('corrUnitsIn');el.value=u;el.dispatchEvent(new Event('input'))}
 document.getElementById('corrUnitsIn').addEventListener('input',function(){document.getElementById('addCorrBtn').disabled=!this.value||parseFloat(this.value)<=0;updateCorrSuggestion()});
 
 // Meal dose suggestion

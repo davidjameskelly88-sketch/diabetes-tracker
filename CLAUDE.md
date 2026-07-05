@@ -67,6 +67,7 @@ When a user logs an insulin "correction" dose (`POST /api/entries/correction`), 
 - Finds the glucose reading closest to the 3h mark and records it as `actualGlucose`, deriving `dropPerUnit` and `accuracy` vs. the user's `predictedGlucose`.
 - If carbs were logged between the correction and its resolution, the drop is confounded — the correction is flagged `carbInterference` and excluded from the "clean" `resolved` set used everywhere else (correction-factor average, `suggestedDrop`, `analysePatterns()`, `suggestMealDose()`).
 - The rolling average `dropPerUnit` across clean resolved corrections becomes the user's personal correction factor, surfaced via `GET /api/correction-factor` and used to auto-suggest `suggestedDrop` on future correction entries. That endpoint also returns `recentCarbs` (carbs logged in the last 2h) as a heads-up that the correction may be less predictable.
+- `GET /api/correction-factor` also proactively suggests a correction dose: `suggestedUnits = (currentGlucose - settings.idealTarget) / factor`, rounded to the nearest 0.5u, `0` if already at/below target. This is distinct from `suggestedDrop` above - one predicts the outcome of a chosen unit amount, the other suggests the unit amount in the first place. Needs both a personal correction factor (≥3 clean resolved corrections) and `settings.idealTarget` set.
 
 `analysePatterns()` (backing `GET /api/insights`) builds on this history: correction-factor accuracy, exercise-day vs. rest-day insulin sensitivity, post-workout glucose deltas, time-of-day highs/lows, and time-in-range (against `settings.targetLow`/`targetHigh`, not a hardcoded range).
 
@@ -75,6 +76,8 @@ The post-exercise insight segments each workout into three phases - before (30mi
 ### Meal dose suggestion
 
 `suggestMealDose(carbs)` (backing `GET /api/meal-suggestion?carbs=`) is a heuristic, not ML: it weights past insulin-dosed meals (`boluses` with `units>0 && carbs>0`) by carb-amount similarity, recency (~30-day half-life), time-of-day-bucket match, and exercise-proximity match, to get a base insulin:carb ratio. It then nudges that ratio using how similar meals actually turned out — post-meal glucose nadir (using `correctionFactor` to translate an excessive drop into a unit reduction) or whether a correction was needed afterward (nudges up). If there isn't enough history yet (< 3 meals, or nothing similar enough), it falls back to `settings.carbRatio` (a manually-set "1 unit per Xg" ratio) when the user has set one.
+
+On top of that, a correction add-on gets folded into whichever base suggestion was used (history-based or `carbRatio` fallback) — the same `(currentGlucose - idealTarget) / correctionFactor` calculation as the standalone correction suggestion, added via a shared `combine()` closure so all three return paths apply it uniformly. This mirrors how a real bolus calculator combines a "carb bolus" with a "correction bolus" into one number rather than treating them as two separate decisions.
 
 ### Meals without insulin
 
@@ -94,7 +97,7 @@ The glucose chart's insulin-activity overlay (`iobActivityFraction()` in `drawCh
 
 ### Settings (target range, insulin:carb ratio, body profile)
 
-`GET`/`POST /api/settings` read/write `data.settings`. `targetLow`/`targetHigh` drive glucose color-coding and time-in-range everywhere (both backend insights/summary and the frontend chart band/dot colors) — there's no hardcoded 4–10 range left. `carbRatio` is the manual meal-suggestion fallback described above. The frontend fetches settings once in `init()` before the first render so colors are correct on load, and again whenever the Settings tab is opened.
+`GET`/`POST /api/settings` read/write `data.settings`. `targetLow`/`targetHigh` drive glucose color-coding and time-in-range everywhere (both backend insights/summary and the frontend chart band/dot colors) — there's no hardcoded 4–10 range left. `idealTarget` is a separate single-value target (distinct from the low/high range) that correction and meal-dose suggestions aim for. `carbRatio` is the manual meal-suggestion fallback described above. The frontend fetches settings once in `init()` before the first render so colors are correct on load, and again whenever the Settings tab is opened.
 
 `heightCm`/`weightKg`/`sex`/`bodyFatPct` (Settings tab "Body Profile" card) are stored purely as context for the Insulin Health Check below (BMI, dose-per-kg) — **never read by any suggestion or calculation elsewhere** (`suggestMealDose`, correction factor, etc.). This is a deliberate boundary: self-estimated body fat % in particular isn't precise enough to weight into anything without giving false confidence. If you're tempted to use these fields for more than display, reconsider.
 
