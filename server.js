@@ -44,6 +44,17 @@ const UPSTASH_KEY = 'diabetes-tracker-data';
 // idealTarget is the single glucose value corrections/meal suggestions aim for (distinct from
 // targetLow/targetHigh, which are the wider range used for time-in-range/color-coding).
 const DEFAULT_SETTINGS = { targetLow: 4.0, targetHigh: 10.0, idealTarget: 7.0, carbRatio: null, heightCm: null, weightKg: null, sex: null, bodyFatPct: null };
+// Sanity bounds for correction-factor-driven suggestions. A personal correction factor
+// averaged from only a handful of resolved corrections can land implausibly low (e.g. a
+// correction that coincided with unrelated glucose noise) - dividing a glucose elevation by
+// a near-zero factor blows the suggestion up to something absurd (a 4mmol/L elevation over a
+// 0.1 factor "suggests" 40+ units). No real person's correction factor is genuinely this low,
+// so below MIN_PLAUSIBLE_FACTOR we withhold the suggestion rather than trust the arithmetic.
+// MAX_SUGGESTED_UNITS is a hard backstop on top of that, since this is a heuristic tool, not
+// medical software - it should never recommend an implausible one-shot dose regardless of
+// what any calculation produces.
+const MIN_PLAUSIBLE_FACTOR = 0.5; // mmol/L drop per unit
+const MAX_SUGGESTED_UNITS = 10;
 // Meal presets are the user's own regular meals (e.g. "Coffee" = 10g), replacing generic
 // round-number quick-carb buttons with ones that actually match what they eat.
 const DEFAULT_MEAL_PRESETS = [{ id: 1, name: 'Coffee', carbs: 10 }];
@@ -390,8 +401,10 @@ async function suggestMealDose(carbs) {
   // regardless of which suggestion path (history-based or manual-ratio fallback) is used.
   const currentGlucose = (glucoseCache && !glucoseCache.error) ? glucoseCache.value : null;
   let correctionAddOn = 0, correctionNote = null;
-  if (currentGlucose != null && idealTarget != null && correctionFactor && currentGlucose > idealTarget) {
-    correctionAddOn = (currentGlucose - idealTarget) / correctionFactor;
+  // Skipped if the correction factor is implausibly low (see MIN_PLAUSIBLE_FACTOR) - same
+  // reasoning as the standalone correction suggestion below.
+  if (currentGlucose != null && idealTarget != null && correctionFactor && correctionFactor >= MIN_PLAUSIBLE_FACTOR && currentGlucose > idealTarget) {
+    correctionAddOn = Math.min(MAX_SUGGESTED_UNITS, (currentGlucose - idealTarget) / correctionFactor);
     correctionNote = `+${correctionAddOn.toFixed(1)}u correction included since you're currently ${currentGlucose} mmol/L (${(currentGlucose-idealTarget).toFixed(1)} above your ${idealTarget} target).`;
   }
   const combine = (baseUnits, note) => ({
@@ -761,11 +774,15 @@ app.get('/api/correction-factor',requireAuth,async(req,res)=>{
   const factor=resolved.reduce((s,c)=>s+c.dropPerUnit,0)/resolved.length;
   // Proactively suggest a correction dose from how far above the ideal target you are right
   // now, rather than only predicting the outcome of a unit amount you've already typed in.
-  let suggestedUnits=null;
-  if(currentGlucose!=null&&idealTarget!=null){
-    suggestedUnits=currentGlucose>idealTarget?Math.round(((currentGlucose-idealTarget)/factor)*2)/2:0;
+  // Skip it entirely if the factor itself is implausibly low (see MIN_PLAUSIBLE_FACTOR) -
+  // dividing by a near-zero factor turns a modest elevation into an absurd suggestion.
+  let suggestedUnits=null, factorTooLow=false;
+  if(factor<MIN_PLAUSIBLE_FACTOR){
+    factorTooLow=true;
+  } else if(currentGlucose!=null&&idealTarget!=null){
+    suggestedUnits=currentGlucose>idealTarget?Math.min(MAX_SUGGESTED_UNITS,Math.round(((currentGlucose-idealTarget)/factor)*2)/2):0;
   }
-  res.json({factor:parseFloat(factor.toFixed(2)),count:resolved.length,recentCarbs,currentGlucose,idealTarget,suggestedUnits});
+  res.json({factor:parseFloat(factor.toFixed(2)),count:resolved.length,recentCarbs,currentGlucose,idealTarget,suggestedUnits,factorTooLow});
 });
 
 // Settings (target range, manual insulin:carb ratio)

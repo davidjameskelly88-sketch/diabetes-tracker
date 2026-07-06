@@ -547,7 +547,9 @@ async function updateCorrSuggestion(){
   let html='';
   // Proactive suggestion from how far above the ideal target you are right now - shown even
   // before typing anything, with a one-tap "Use" to fill the units field.
-  if(r.suggestedUnits!=null){
+  if(r.factorTooLow){
+    html+=`<div class="suggest-box" style="background:var(--orange-l);color:#c2410c">Your correction factor (${r.factor}/unit) looks too low to be reliable — not confident enough to suggest a dose yet. Log a few more corrections without carbs nearby to firm this up.</div>`;
+  } else if(r.suggestedUnits!=null){
     if(r.suggestedUnits>0){
       html+=`<div class="suggest-box">Suggested: ${r.suggestedUnits}u (currently ${r.currentGlucose} mmol/L, ${(r.currentGlucose-r.idealTarget).toFixed(1)} above your ${r.idealTarget} target)${uRaw===''?` <button type="button" onclick="useCorrSuggestion(${r.suggestedUnits})" style="width:auto;padding:3px 10px;margin-left:4px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-size:11px;font-weight:600;cursor:pointer">Use</button>`:''}</div>`;
     } else {
@@ -704,7 +706,10 @@ function drawChart(data, events=[]){
       ctx.fillStyle='#ea580c';ctx.font='bold 9px sans-serif';ctx.textAlign='center';
       ctx.fillText('⚡'+e.units+'u',ex,pad.t-2);
     } else if(e.type==='exercise'){
-      ctx.fillStyle='rgba(22,163,74,0.15)';const ew=Math.max(20,(e.duration||30)/chartHours*60*cW/tRange);
+      // Duration (minutes) -> pixels using the chart's actual time span, not the nominal
+      // range-button value - the previous formula mixed those up and produced a width so
+      // small it always hit the 20px floor, regardless of how long the workout really was.
+      ctx.fillStyle='rgba(22,163,74,0.15)';const ew=Math.max(20,(e.duration||30)*60000/tRange*cW);
       ctx.fillRect(ex,pad.t,ew,cH);
       ctx.fillStyle='#16a34a';ctx.font='bold 9px sans-serif';ctx.textAlign='left';
       ctx.fillText('🏋️'+(e.label||''),ex+2,H-pad.b-4);
