@@ -58,7 +58,12 @@ const MAX_SUGGESTED_UNITS = 10;
 // Meal presets are the user's own regular meals (e.g. "Coffee" = 10g), replacing generic
 // round-number quick-carb buttons with ones that actually match what they eat.
 const DEFAULT_MEAL_PRESETS = [{ id: 1, name: 'Coffee', carbs: 10 }];
-const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS }, mealPresets: DEFAULT_MEAL_PRESETS.map(p=>({...p})) });
+// Workout presets are just a name (unlike meal presets, no fixed "amount") - they exist to
+// keep workout-type naming consistent (e.g. "Strength workout" vs "Strength training" logged
+// as the same activity should actually be the same string, since analysePatterns() groups
+// exercise insights by exact name match).
+const DEFAULT_WORKOUT_PRESETS = [];
+const EMPTY_DATA = () => ({ boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { ...DEFAULT_SETTINGS }, mealPresets: DEFAULT_MEAL_PRESETS.map(p=>({...p})), workoutPresets: DEFAULT_WORKOUT_PRESETS.map(p=>({...p})) });
 
 const DATA_DIR = fs.existsSync(path.join(__dirname, '.data'))
   ? path.join(__dirname, '.data') : __dirname;
@@ -69,6 +74,7 @@ function backfill(d) {
   if (!d.settings) d.settings = { ...DEFAULT_SETTINGS };
   else d.settings = { ...DEFAULT_SETTINGS, ...d.settings };
   if (!d.mealPresets) d.mealPresets = DEFAULT_MEAL_PRESETS.map(p=>({...p}));
+  if (!d.workoutPresets) d.workoutPresets = DEFAULT_WORKOUT_PRESETS.map(p=>({...p}));
   return d;
 }
 
@@ -218,11 +224,15 @@ async function resolveCorrections() {
   const data = await loadData();
   let changed = false;
   for (const c of data.corrections) {
-    if (c.actualGlucose !== null) continue; // already resolved
+    if (c.actualGlucose !== null || c.giveUp) continue; // already resolved, or already gave up
     const elapsed = Date.now() - c.time;
     if (elapsed < 150 * 60000) continue; // wait at least 2.5 hours
     if (elapsed > 240 * 60000) { // give up after 4 hours
-      c.actualGlucose = null; c.resolved = false; changed = true; continue;
+      // giveUp is a distinct flag from actualGlucose/resolved (which stay null/false) so this
+      // correction stops being re-processed on every future poll - without it, a timed-out
+      // correction gets re-evaluated and re-saved every ~5min forever, since actualGlucose
+      // never becomes non-null to satisfy the skip-check above.
+      c.actualGlucose = null; c.resolved = false; c.giveUp = true; changed = true; continue;
     }
     // Find glucose reading closest to 3 hours after correction
     const targetTime = c.time + 180 * 60000;
@@ -688,7 +698,7 @@ app.post('/api/entries/correction',requireAuth,async(req,res)=>{
     suggestedDrop,
     recentCarbs: recentCarbs || null,
     actualGlucose: null, resolved: false, resolvedAt: null, dropPerUnit: null, accuracy: null,
-    carbInterference: false, interferingCarbs: null,
+    carbInterference: false, interferingCarbs: null, giveUp: false,
   };
   data.corrections.unshift(entry);data.corrections.sort((a,b)=>b.time-a.time);await saveData(data);res.json(entry);
 });
@@ -708,7 +718,7 @@ app.patch('/api/entries/bolus/:id',requireAuth,async(req,res)=>{
   const data=await loadData();
   const entry=data.boluses.find(b=>b.id===parseInt(req.params.id));
   if(!entry)return res.status(404).json({error:'Not found'});
-  if(units!=null){const u=parseFloat(units);if(!isNaN(u))entry.units=u;}
+  if(units!=null){const u=parseFloat(units);if(isNaN(u)||u<0)return res.status(400).json({error:'Invalid units'});entry.units=u;}
   if(carbs!==undefined){const c=(carbs===null||carbs==='')?null:parseFloat(carbs);entry.carbs=(c!=null&&!isNaN(c))?c:null;}
   // datetime-local inputs only have minute precision - ignore rounding noise under a minute
   if(time){const newTime=resolveEntryTime(time);if(Math.abs(newTime-entry.time)>=60000)entry.time=newTime;}
@@ -757,7 +767,7 @@ app.patch('/api/entries/correction/:id',requireAuth,async(req,res)=>{
   // Editing units or time invalidates any prior resolution - let resolveCorrections() re-derive it.
   if(resetResolution){
     entry.actualGlucose=null;entry.resolved=false;entry.resolvedAt=null;entry.dropPerUnit=null;entry.accuracy=null;
-    entry.carbInterference=false;entry.interferingCarbs=null;
+    entry.carbInterference=false;entry.interferingCarbs=null;entry.giveUp=false;
   }
   data.corrections.sort((a,b)=>b.time-a.time);
   await saveData(data);res.json(entry);
@@ -844,6 +854,23 @@ app.post('/api/meal-presets',requireAuth,async(req,res)=>{
 app.delete('/api/meal-presets/:id',requireAuth,async(req,res)=>{
   const data=await loadData();
   data.mealPresets=data.mealPresets.filter(p=>String(p.id)!==req.params.id);
+  await saveData(data);res.json({ok:true});
+});
+
+// Workout presets - just a name, to keep workout-type naming consistent (see comment on
+// DEFAULT_WORKOUT_PRESETS above).
+app.get('/api/workout-presets',requireAuth,async(req,res)=>{res.json((await loadData()).workoutPresets||[])});
+app.post('/api/workout-presets',requireAuth,async(req,res)=>{
+  const{name}=req.body;
+  if(!name||!name.trim())return res.status(400).json({error:'Name required'});
+  const data=await loadData();
+  const entry={id:Date.now(),name:name.trim()};
+  data.workoutPresets.push(entry);
+  await saveData(data);res.json(entry);
+});
+app.delete('/api/workout-presets/:id',requireAuth,async(req,res)=>{
+  const data=await loadData();
+  data.workoutPresets=data.workoutPresets.filter(p=>String(p.id)!==req.params.id);
   await saveData(data);res.json({ok:true});
 });
 

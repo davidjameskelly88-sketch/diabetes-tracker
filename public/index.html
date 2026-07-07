@@ -189,6 +189,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 </div>
 <div class="card">
   <div class="card-title">🏋️ Log a workout</div>
+  <div class="qc" id="workoutQc"></div>
   <div class="input-row">
     <div class="ig"><label>Type</label><input type="text" id="workoutTypeIn" placeholder="e.g. Running"></div>
     <div class="ig"><label>Duration (min)</label><input type="number" inputmode="decimal" id="workoutDurIn"></div>
@@ -250,6 +251,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <button class="btn btn-blue" onclick="addPreset()">＋ Add preset</button>
 </div>
 <div class="card">
+  <div class="card-title">🏋️ Workout Presets</div>
+  <div id="workoutPresetList"></div>
+  <div class="ig" style="margin-bottom:12px"><label>Name</label><input type="text" id="workoutPresetNameIn" placeholder="e.g. Strength Training"></div>
+  <button class="btn btn-blue" onclick="addWorkoutPreset()">＋ Add preset</button>
+</div>
+<div class="card">
   <div class="card-title">📤 Export Data</div>
   <a class="btn btn-dark" href="/api/export.csv" download style="text-decoration:none">⬇ Export CSV</a>
 </div>
@@ -299,7 +306,7 @@ async function doLogin(){const r=await fetch('/api/login',{method:'POST',headers
 document.getElementById('pwInput').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 function showApp(){document.getElementById('loginPage').style.display='none';document.getElementById('appPage').style.display='block';init()}
 
-function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory();loadInsulinHealth()}if(t==='summary')loadDailySummary();if(t==='settings'){fetchSettings();loadPresetManager()}}
+function showTab(t){document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('on',['track','activity','insights','summary','settings'][i]===t));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('vis'));document.getElementById('panel-'+t).classList.add('vis');if(t==='activity')loadActivities();if(t==='insights'){loadInsights();loadCorrHistory();loadInsulinHealth()}if(t==='summary')loadDailySummary();if(t==='settings'){fetchSettings();loadPresetManager();loadWorkoutPresetManager()}}
 
 async function api(u,o){const r=await fetch(u,o);if(r.status===401)location.reload();return r.json()}
 
@@ -443,6 +450,23 @@ async function addPreset(){
   loadPresetManager();loadMealPresets();
 }
 async function delPreset(id){await api(`/api/meal-presets/${id}`,{method:'DELETE'});loadPresetManager();loadMealPresets()}
+
+async function loadWorkoutPresetManager(){
+  const el=document.getElementById('workoutPresetList');
+  try{
+    const presets=await api('/api/workout-presets');
+    if(!presets.length){el.innerHTML='<div class="empty">No presets yet</div>';return}
+    el.innerHTML=presets.map(p=>`<div class="log-entry"><div class="log-left"><div class="log-primary">${p.name}</div></div><button class="log-del" onclick="delWorkoutPreset('${p.id}')">✕</button></div>`).join('');
+  }catch(e){el.innerHTML=''}
+}
+async function addWorkoutPreset(){
+  const name=document.getElementById('workoutPresetNameIn').value.trim();
+  if(!name)return;
+  await api('/api/workout-presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  document.getElementById('workoutPresetNameIn').value='';
+  loadWorkoutPresetManager();loadWorkoutPresets();
+}
+async function delWorkoutPreset(id){await api(`/api/workout-presets/${id}`,{method:'DELETE'});loadWorkoutPresetManager();loadWorkoutPresets()}
 
 // Backdated logging: each form has a hidden datetime-local input revealed by a "Backdate"
 // toggle. Left closed, no time is sent and the server defaults to now.
@@ -733,7 +757,24 @@ async function loadMealPresets(){
   mealPresets.forEach(p=>{
     const b=document.createElement('button');
     b.textContent=`${p.name} (${p.carbs}g)`;
-    b.onclick=()=>{document.getElementById('carbIn').value=p.carbs;document.querySelectorAll('.qc button').forEach(x=>x.classList.remove('on'));b.classList.add('on');updateBolusBtn();updateMealSuggestion()};
+    b.onclick=()=>{document.getElementById('carbIn').value=p.carbs;qcEl.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');updateBolusBtn();updateMealSuggestion()};
+    qcEl.appendChild(b);
+  });
+}
+
+// Workout presets - same pattern as meal presets, but just a name (no fixed "amount"). Keeps
+// workout-type naming consistent instead of retyping slightly different names each time
+// (which would otherwise fragment the exercise-pattern insights, which group by exact name).
+let workoutPresets=[];
+async function loadWorkoutPresets(){
+  try{workoutPresets=await api('/api/workout-presets')}catch(e){workoutPresets=[]}
+  const qcEl=document.getElementById('workoutQc');
+  qcEl.innerHTML='';
+  if(!workoutPresets.length){qcEl.innerHTML='<div class="empty" style="padding:8px 0">No workout presets yet — add your regulars in Settings</div>';return}
+  workoutPresets.forEach(p=>{
+    const b=document.createElement('button');
+    b.textContent=p.name;
+    b.onclick=()=>{document.getElementById('workoutTypeIn').value=p.name;qcEl.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.getElementById('addWorkoutBtn').disabled=false};
     qcEl.appendChild(b);
   });
 }
@@ -745,7 +786,7 @@ document.getElementById('carbIn').addEventListener('keydown',e=>{if(e.key==='Ent
 document.getElementById('basalToggle').addEventListener('click',function(){const f=document.getElementById('basalForm'),v=f.classList.toggle('vis');this.textContent=v?'Cancel':'Add'});
 document.getElementById('basalIn').addEventListener('keydown',e=>{if(e.key==='Enter')addBasal()});
 
-async function init(){await fetchSettings();fetchEntries();fetchGlucose();loadChart();loadMealPresets();setInterval(render,30000);setInterval(()=>{fetchGlucose();loadChart()},60000)}
+async function init(){await fetchSettings();fetchEntries();fetchGlucose();loadChart();loadMealPresets();loadWorkoutPresets();setInterval(render,30000);setInterval(()=>{fetchGlucose();loadChart()},60000)}
 checkAuth();
 </script>
 </body>

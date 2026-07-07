@@ -63,7 +63,7 @@ Single shared `APP_PASSWORD` (no user accounts). `requireAuth` middleware in `se
 ### Correction-resolution flow (the core domain logic)
 
 When a user logs an insulin "correction" dose (`POST /api/entries/correction`), the entry is stored unresolved (`actualGlucose: null`). On every subsequent glucose fetch, `resolveCorrections()` checks each pending correction:
-- Waits at least 2.5h, gives up (marks unresolved) after 4h.
+- Waits at least 2.5h, gives up (marks unresolved) after 4h, setting a `giveUp` flag distinct from `actualGlucose`/`resolved` (which stay `null`/`false`) so a timed-out correction stops being re-evaluated on every future poll - without it, `actualGlucose` never becomes non-null, so the skip-check never excludes it and it gets needlessly re-processed and re-saved every ~5min forever.
 - Finds the glucose reading closest to the 3h mark and records it as `actualGlucose`, deriving `dropPerUnit` and `accuracy` vs. the user's `predictedGlucose`.
 - If carbs were logged between the correction and its resolution, the drop is confounded — the correction is flagged `carbInterference` and excluded from the "clean" `resolved` set used everywhere else (correction-factor average, `suggestedDrop`, `analysePatterns()`, `suggestMealDose()`).
 - The rolling average `dropPerUnit` across clean resolved corrections becomes the user's personal correction factor, surfaced via `GET /api/correction-factor` and used to auto-suggest `suggestedDrop` on future correction entries. That endpoint also returns `recentCarbs` (carbs logged in the last 2h) as a heads-up that the correction may be less predictable.
@@ -105,6 +105,8 @@ The glucose chart's insulin-activity overlay (`iobActivityFraction()` in `drawCh
 ### Meal presets
 
 `data.mealPresets` (`{id, name, carbs}`, `GET`/`POST /api/meal-presets`, `DELETE /api/meal-presets/:id`) are the user's own regular meals (defaults to just `Coffee` = 10g), shown as quick-select buttons on the Log a meal card instead of generic round-number carb amounts (which the actual user of this app doesn't use) — tapping one fills the carbs field the same way the old hardcoded buttons did. Managed from the Settings tab; `loadMealPresets()` (Track tab buttons) and `loadPresetManager()` (Settings tab list) are separate render functions but both re-fetch from the same endpoint, so adding/removing a preset in Settings is reflected on Track next time either runs.
+
+`data.workoutPresets` (`{id, name}`, same `GET`/`POST`/`DELETE` shape under `/api/workout-presets`) is the same idea for the Activity tab's "Log a workout" form, but name-only - there's no fixed "amount" for a workout the way there is carbs for a meal. This exists specifically to keep workout-type naming consistent (e.g. "Strength workout" vs "Strength training" typed on different days), since `analysePatterns()`'s exercise-day detection and post-workout insight group activities by exact `workoutType` string match - inconsistent free-text naming silently fragments what should be one pattern into several. Both quick-select rows share the `.qc` CSS class for pill-button styling, but their "clear the .on state" handlers are scoped to their own container (`#qc` / `#workoutQc` respectively) rather than querying `.qc button` globally, so tapping a meal preset doesn't clear a workout preset's selected state or vice versa.
 
 ### Insulin Health Check
 
