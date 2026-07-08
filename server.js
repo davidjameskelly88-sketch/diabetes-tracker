@@ -453,6 +453,18 @@ async function suggestMealDose(carbs) {
     return { ratio: m.units / m.carbs, weight, nadir, hadCorrection };
   }).filter(Boolean);
 
+  // Outlier guard: a single atypical entry (a correction bundled into the same dose as a
+  // meal, a data-entry slip, an illness day) can dominate a weighted average this small a
+  // sample. Down-weight - don't exclude - any entry whose ratio is far from the matched
+  // group's median before averaging, so one unusual day can't swing the suggestion this hard.
+  if (scored.length >= 3) {
+    const sortedRatios = scored.map(x => x.ratio).sort((a,b) => a-b);
+    const median = sortedRatios[Math.floor(sortedRatios.length / 2)];
+    if (median > 0) {
+      scored.forEach(x => { if (x.ratio > median*2.5 || x.ratio < median*0.4) x.weight *= 0.15; });
+    }
+  }
+
   const totalWeight = scored.reduce((s,x) => s + x.weight, 0);
   if (!scored.length || totalWeight < 0.5) {
     if (carbRatio) {
