@@ -39,7 +39,7 @@ No real database — a single JSON blob read/written wholesale via `loadData()`/
 { boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { targetLow, targetHigh, carbRatio } }
 ```
 `backfill()` merges in `DEFAULT_SETTINGS` (and an empty `corrections` array) for blobs saved before a field existed, so old data doesn't need a migration.
-Retention is pruned inline: `glucoseHistory` kept 7 days, `activities` kept 30 days, `corrections` kept indefinitely (needed for long-term pattern analysis).
+Retention is pruned inline: `glucoseHistory` kept 14 days (extended from 7 so `checkInsulinHealth()`'s week-over-week comparison has a prior week of glucose to read — at 7 days the "prior week" window was always empty and that comparison silently never fired), `activities` kept 30 days, `corrections` kept indefinitely (needed for long-term pattern analysis). `analysePatterns()` deliberately re-scopes `glucoseHistory` down to just the trailing 7 days of that for its own insights, so its "over the last 7 days" language stays accurate and day-of-week-style patterns (which would need many more weeks to be meaningful) aren't attempted.
 
 Storage backend depends on environment:
 - If `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` are set, the blob is stored as a single key in Upstash Redis via plain `fetch()` against its REST API (no client library, same style as the LibreLinkUp calls). This is what Render (no persistent disk on the free tier) uses in production.

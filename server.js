@@ -208,7 +208,13 @@ async function fetchGlucose() {
     // Store history
     if(!last||Math.abs(ts-last.time)>3*60000){
       data.glucoseHistory.push({time:ts,value:mmol,trend:trend.arrow});
-      const cutoff=Date.now()-7*24*60*60*1000;
+      // 14 days, not 7 - checkInsulinHealth()'s periodStats() compares two rolling 7-day
+      // windows (this week vs. the prior week), so the prior window needs its own 7 days of
+      // glucose behind the current one. Retaining only 7 days made that "prior week" comparison
+      // silently always-empty (readingCount was always 0, so the note never fired). Pattern
+      // analysis in analysePatterns() still explicitly scopes itself to the trailing 7 days
+      // regardless, so its "over the last 7 days" language stays accurate.
+      const cutoff=Date.now()-14*24*60*60*1000;
       data.glucoseHistory=data.glucoseHistory.filter(g=>g.time>cutoff);
       await saveData(data);
     }
@@ -263,9 +269,15 @@ async function resolveCorrections() {
 // ─── Pattern Analysis ─────────────────────────────────────────────────
 async function analysePatterns() {
   const data = await loadData();
-  const { boluses, corrections, activities, glucoseHistory, settings } = data;
+  const { boluses, corrections, activities, glucoseHistory: allGlucoseHistory, settings } = data;
   const { targetLow, targetHigh } = settings;
   const insights = [];
+
+  // glucoseHistory itself now retains 14 days (see the prune cutoff in fetchGlucose(), extended
+  // for checkInsulinHealth()'s week-over-week comparison) - pattern analysis deliberately keeps
+  // looking at just the trailing 7 days so its "over the last 7 days" / hour-bucket language
+  // below stays accurate and doesn't quietly start meaning something wider.
+  const glucoseHistory = allGlucoseHistory.filter(g => g.time >= Date.now() - 7*24*60*60*1000);
 
   if (glucoseHistory.length < 20) {
     return [{ type:'info', text:'Keep logging — pattern analysis needs a few days of data.' }];
@@ -386,6 +398,100 @@ async function analysePatterns() {
   const inRange=glucoseHistory.filter(g=>g.value>=targetLow&&g.value<=targetHigh).length;
   const tir=((inRange/glucoseHistory.length)*100).toFixed(0);
   insights.push({type:parseInt(tir)>=70?'positive':'info',text:`Time in range (${targetLow}–${targetHigh}): ${tir}% across ${glucoseHistory.length} readings.`});
+
+  // 7. Dawn phenomenon - overnight glucose rise while fasting. Reuses hourBuckets from #4
+  // (each hour's readings pooled across the trailing 7 days) rather than a day-of-week or
+  // weekend-vs-weekday comparison - analysePatterns() deliberately only looks at the trailing
+  // 7 days (see glucoseHistory filter above), so there's ever only one Monday/Saturday etc. in
+  // scope at a time, too thin a sample to call a "pattern" rather than noise.
+  const overnightAvgs=[1,2,3,4,5].map(h=>hourBuckets[h]).filter(a=>a&&a.length>=3).map(a=>a.reduce((s,v)=>s+v,0)/a.length);
+  const morningAvgs=[6,7,8,9].map(h=>hourBuckets[h]).filter(a=>a&&a.length>=3).map(a=>a.reduce((s,v)=>s+v,0)/a.length);
+  if(overnightAvgs.length&&morningAvgs.length){
+    const overnightMin=Math.min(...overnightAvgs), morningMax=Math.max(...morningAvgs);
+    const rise=morningMax-overnightMin;
+    if(rise>1.2) insights.push({type:'warning',text:`Possible dawn phenomenon: glucose tends to climb from ~${overnightMin.toFixed(1)} overnight to ~${morningMax.toFixed(1)} mmol/L by morning (a ${rise.toFixed(1)} mmol/L rise), consistent with the liver's early-morning hormone release.`});
+  }
+
+  // 8. Hypo/hyper clustering by time-of-day window - distinct from #4's single highest/lowest
+  // *average* hour: this looks at where actual out-of-range readings concentrate, grouped into
+  // 4h windows to smooth single-hour noise. A hypo cluster is the more actionable of the two,
+  // since it points at a specific window worth watching rather than just an average.
+  const windowLabel=h=>h<4?'midnight–4am':h<8?'4–8am':h<12?'8am–noon':h<16?'noon–4pm':h<20?'4–8pm':'8pm–midnight';
+  function dominantWindow(readings){
+    if(readings.length<6)return null;
+    const counts={};
+    readings.forEach(g=>{const w=windowLabel(new Date(g.time).getHours());counts[w]=(counts[w]||0)+1});
+    const [label,count]=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
+    const share=count/readings.length;
+    return share>=0.35?{label,share}:null;
+  }
+  const lowWindow=dominantWindow(glucoseHistory.filter(g=>g.value<targetLow));
+  if(lowWindow) insights.push({type:'warning',text:`${Math.round(lowWindow.share*100)}% of your low readings (below ${targetLow}) fall between ${lowWindow.label}.`});
+  const highWindow=dominantWindow(glucoseHistory.filter(g=>g.value>targetHigh));
+  if(highWindow) insights.push({type:'info',text:`${Math.round(highWindow.share*100)}% of your high readings (above ${targetHigh}) fall between ${highWindow.label}.`});
+
+  // 9. Meal-size outcome patterns - bucket dosed meals into small/medium/large by carbs using
+  // tertiles (this user's own meal-size distribution) rather than fixed gram cutoffs, since
+  // typical portion sizes vary a lot person to person. Mirrors suggestMealDose()'s nadir/
+  // correction-needed signals but surfaces them per size bucket instead of folding into one
+  // suggestion number.
+  const sizedMeals=boluses.filter(b=>b.units>0&&b.carbs>0).slice().sort((a,b)=>a.carbs-b.carbs);
+  if(sizedMeals.length>=6){
+    const third=Math.ceil(sizedMeals.length/3);
+    const sizeBuckets=[
+      {label:'Small',meals:sizedMeals.slice(0,third)},
+      {label:'Medium',meals:sizedMeals.slice(third,third*2)},
+      {label:'Large',meals:sizedMeals.slice(third*2)},
+    ];
+    sizeBuckets.forEach(({label,meals})=>{
+      if(meals.length<2)return;
+      const carbsRange=`${Math.round(meals[0].carbs)}–${Math.round(meals[meals.length-1].carbs)}g`;
+      const outcomes=meals.map(m=>{
+        const post=glucoseHistory.filter(g=>g.time>m.time+30*60000&&g.time<=m.time+240*60000);
+        return {
+          nadir: post.length?Math.min(...post.map(g=>g.value)):null,
+          peak: post.length?Math.max(...post.map(g=>g.value)):null,
+          neededCorrection: corrections.some(c=>c.time>m.time&&c.time<m.time+180*60000),
+        };
+      });
+      const withReadings=outcomes.filter(o=>o.nadir!=null);
+      if(!withReadings.length)return;
+      const avgNadir=withReadings.reduce((s,o)=>s+o.nadir,0)/withReadings.length;
+      const avgPeak=withReadings.reduce((s,o)=>s+o.peak,0)/withReadings.length;
+      const correctionShare=outcomes.filter(o=>o.neededCorrection).length/outcomes.length;
+      if(avgNadir<targetLow){
+        insights.push({type:'warning',text:`${label} meals (${carbsRange}, ${meals.length} logged) tend to run low afterward — avg low ${avgNadir.toFixed(1)} mmol/L.`});
+      } else if(correctionShare>0.4){
+        insights.push({type:'warning',text:`${label} meals (${carbsRange}, ${meals.length} logged) needed a correction afterward ${Math.round(correctionShare*100)}% of the time — avg peak ${avgPeak.toFixed(1)} mmol/L.`});
+      } else if(avgPeak<=targetHigh&&avgNadir>=targetLow){
+        insights.push({type:'positive',text:`${label} meals (${carbsRange}, ${meals.length} logged) usually stay in range afterward (avg peak ${avgPeak.toFixed(1)}, avg low ${avgNadir.toFixed(1)} mmol/L).`});
+      }
+    });
+  }
+
+  // 10. Glucose variability (coefficient of variation) - a standard complement to time-in-range;
+  // ADA/ATTD consensus treats <=36% as the usual stability target. Reported as a single trailing-
+  // 7-day snapshot (matching this function's own 7-day scoping above), not trended week-over-week.
+  const gVals=glucoseHistory.map(g=>g.value);
+  const gMean=gVals.reduce((a,b)=>a+b,0)/gVals.length;
+  const gVariance=gVals.reduce((s,v)=>s+(v-gMean)**2,0)/gVals.length;
+  const cv=Math.sqrt(gVariance)/gMean*100;
+  insights.push({type:cv<=36?'positive':'warning',text:`Glucose variability (CV) over the last 7 days: ${cv.toFixed(0)}%. ${cv<=36?'Within the usual ≤36% stability target.':'Above the usual 36% stability target — swings are larger than ideal.'}`});
+
+  // 11. Insulin-sensitivity trend - unlike #10, this can legitimately look further back than 7
+  // days since corrections (unlike glucoseHistory) are kept indefinitely. Compares the earlier
+  // vs later half of clean resolved corrections chronologically, not calendar weeks.
+  if(resolved.length>=6){
+    const sortedResolved=resolved.slice().sort((a,b)=>a.time-b.time);
+    const mid=Math.floor(sortedResolved.length/2);
+    const earlier=sortedResolved.slice(0,mid), later=sortedResolved.slice(mid);
+    const earlierAvg=earlier.reduce((s,c)=>s+c.dropPerUnit,0)/earlier.length;
+    const laterAvg=later.reduce((s,c)=>s+c.dropPerUnit,0)/later.length;
+    const factorDiff=laterAvg-earlierAvg;
+    if(Math.abs(factorDiff)>0.3){
+      insights.push({type:'info',text:`Your insulin sensitivity may be ${factorDiff>0?'increasing':'decreasing'} — correction factor averaged ${earlierAvg.toFixed(1)} mmol/L/unit in your earlier logged corrections, vs ${laterAvg.toFixed(1)} more recently.`});
+    }
+  }
 
   return insights.length?insights:[{type:'info',text:'No strong patterns yet. Keep logging.'}];
 }
