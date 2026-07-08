@@ -14,7 +14,7 @@ A personal insulin/glucose/activity tracker for type 1 diabetes management. It p
 
 ## Running locally
 
-Create a `.env` file in the project root (loaded manually by `server.js`, not via dotenv package):
+Create a `.env` file in the project root (loaded manually by `lib/config.js`, not via dotenv package):
 ```
 LLU_EMAIL=...
 LLU_PASSWORD=...
@@ -27,14 +27,20 @@ The server calls `process.exit(1)` at startup if `LLU_EMAIL`/`LLU_PASSWORD`/`APP
 
 ## Architecture
 
-Two files hold essentially all the logic:
+Backend is `server.js` (a thin Express entry point) over five `lib/` modules; frontend is three plain files in `public/` (no framework, no bundler), served statically and rendered as a single-page app with 5 tabs (Track / Activity / Insights / Today / Settings):
 
-- **`server.js`** — Express backend, LibreLinkUp client, pattern-analysis engine, JSON-file persistence.
-- **`public/index.html`** — entire frontend: markup, CSS, and vanilla JS in one file (no framework, no bundler). Rendered as a single-page app with 5 tabs (Track / Activity / Insights / Today / Settings).
+- **`lib/config.js`** — manual `.env` loading, constants (`DEFAULT_SETTINGS`, `MIN_PLAUSIBLE_FACTOR`, etc.), startup validation (`process.exit(1)` on missing creds).
+- **`lib/store.js`** — `loadData()`/`saveData()` single-blob persistence (Upstash Redis or local `data.json`), `backfill()`.
+- **`lib/libre.js`** — LibreLinkUp client: `login()`, `fetchGlucose()`, `computeTrend()`, the glucose cache, `POLL_MS`.
+- **`lib/analysis.js`** — the domain logic: `resolveCorrections()`, `analysePatterns()`, `suggestMealDose()`, `getDailySummary()`, `checkInsulinHealth()`, plus `resolveEntryTime()`/`glucoseAt()` helpers.
+- **`lib/routes.js`** — all Express routes + `requireAuth`.
+- **`public/index.html`** (markup) / **`public/styles.css`** / **`public/app.js`** (all frontend logic, loaded as a plain script — functions are global because the markup uses inline `onclick=`).
+
+One deliberate wiring quirk: `analysis.js` needs the glucose cache from `libre.js`, and `libre.js` needs to trigger `resolveCorrections()` after each fetch — that direction is injected (`setOnGlucoseFetched(resolveCorrections)` in `server.js`) rather than required, to avoid a circular dependency. If you add another "do X when a reading arrives" behavior, extend that hook rather than adding a require cycle.
 
 ### Data persistence
 
-No real database — a single JSON blob read/written wholesale via `loadData()`/`saveData()` in `server.js` (both `async`, all call sites use `await`). Shape:
+No real database — a single JSON blob read/written wholesale via `loadData()`/`saveData()` in `lib/store.js` (both `async`, all call sites use `await`). Shape:
 ```js
 { boluses: [], basalDoses: [], corrections: [], activities: [], glucoseHistory: [], settings: { targetLow, targetHigh, carbRatio } }
 ```
@@ -49,13 +55,13 @@ When adding new data fields or call sites, remember `loadData()`/`saveData()` ar
 
 ### Auth
 
-Single shared `APP_PASSWORD` (no user accounts). `requireAuth` middleware in `server.js` accepts either an httpOnly cookie (`auth`, sha256 of the password, set via `POST /api/login`) or a `Bearer <APP_PASSWORD>` header — the latter path exists specifically so Apple Shortcuts can POST to `/api/health` without cookie support.
+Single shared `APP_PASSWORD` (no user accounts). `requireAuth` middleware in `lib/routes.js` accepts either an httpOnly cookie (`auth`, sha256 of the password, set via `POST /api/login`) or a `Bearer <APP_PASSWORD>` header — the latter path exists specifically so Apple Shortcuts can POST to `/api/health` without cookie support.
 
 ### LibreLinkUp integration
 
-`server.js` maintains its own auth session against the LibreLinkUp API (`REGIONS` map of per-region base URLs, spoofed iOS `User-Agent`/`product` headers to match the official app). Key pieces:
+`lib/libre.js` maintains its own auth session against the LibreLinkUp API (`REGIONS` map of per-region base URLs, spoofed iOS `User-Agent`/`product` headers to match the official app). Key pieces:
 - `login()` — authenticates, handles the "Terms of Use" re-acceptance redirect flow, caches `authToken`/`tokenExpiry` (50 min).
-- `fetchGlucose()` — cached per `POLL_MS` (5 min, intentionally matched to the official app's poll rate to avoid account restrictions — do not lower this); on a genuinely new reading (>3 min since last stored point) appends to `glucoseHistory` and triggers `resolveCorrections()`. Uses `FactoryTimestamp` (UTC) rather than `Timestamp` (unmarked local time — drifts during BST) for the reading's timestamp.
+- `fetchGlucose()` — cached per `POLL_MS` (5 min, intentionally matched to the official app's poll rate to avoid account restrictions — do not lower this); on a genuinely new reading (>3 min since last stored point) appends to `glucoseHistory` and triggers `resolveCorrections()` (via the injected `setOnGlucoseFetched` hook, see Architecture above). Uses `FactoryTimestamp` (UTC) rather than `Timestamp` (unmarked local time — drifts during BST) for the reading's timestamp.
 - `computeTrend()` derives the rising/falling arrow from the delta between the last two stored `glucoseHistory` points (mmol/L per minute, bucketed), overriding LibreLinkUp's own `TrendArrow` — this is more responsive than the API's arrow without polling more often. Falls back to the API's arrow when there's no usable prior point (cold start or a >20min gap).
 - `fetchGlucose()` also exposes the raw (non-bucketed) `delta`/`deltaMinutes` between those same two points on the `/api/glucose` response — shown as a small corner note on the frontend's glucose card (e.g. "+0.3 (5m)"). `null` if there's no prior point or the gap exceeds 20min, same guard as `computeTrend()`.
 - Server polls glucose automatically via `setInterval` at startup — this happens independent of any HTTP request.
@@ -92,7 +98,7 @@ Each entry type also has a `PATCH /api/entries/<kind>/:id` for in-place edits. E
 
 ### Carbs on board (COB) and insulin on board (IOB)
 
-Both are computed client-side in `public/index.html`, decaying independently per entry (`iobFraction()` / `cobFraction()`). `calcIOB()` sums over both `boluses` *and* `corrections` (a correction is still an insulin injection); `calcCOB()` only sums `boluses`, since corrections don't carry carbs. IOB uses the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. COB uses a simpler linear absorption model over `COB_DURATION = 180` minutes (carb absorption varies far more by food type than insulin action does, so a tuned curve isn't worth it here — linear is the standard pragmatic default).
+Both are computed client-side in `public/app.js`, decaying independently per entry (`iobFraction()` / `cobFraction()`). `calcIOB()` sums over both `boluses` *and* `corrections` (a correction is still an insulin injection); `calcCOB()` only sums `boluses`, since corrections don't carry carbs. IOB uses the exponential insulin-action model (`iobFraction()`, same formula used by Loop/OpenAPS) with `IOB_PEAK = 75` / `IOB_DIA = 240` minutes, tuned for Novorapid — this replaced an earlier naive linear-decay model that wrongly treated a dose as 100% active immediately after injection. COB uses a simpler linear absorption model over `COB_DURATION = 180` minutes (carb absorption varies far more by food type than insulin action does, so a tuned curve isn't worth it here — linear is the standard pragmatic default).
 
 The glucose chart's insulin-activity overlay (`iobActivityFraction()` in `drawChart()`) is a different curve from IOB's remaining-on-board fraction: it's the bell-shaped *rate of use*, peaking around `IOB_PEAK` minutes, derived as the per-minute finite difference of `iobFraction()` rather than a separately-derived formula, so it can't drift out of sync with the IOB model actually in use. `_iobActivityPeak` (a 1-unit dose's peak rate, sampled once at load) and `IOB_CHART_SCALE_UNITS = 10` calibrate the overlay's height so a typical dose fills a sensible fraction of the chart rather than being auto-scaled per-view (which would make the same dose look a different size depending on what else is visible). Doses are summed at each sample point, so overlapping boluses/corrections render as one merged curve rather than stacking separately.
 
@@ -118,9 +124,11 @@ The glucose chart's insulin-activity overlay (`iobActivityFraction()` in `drawCh
 
 ### Frontend
 
-`public/index.html` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`. Hour labels on the x-axis are anchored to actual clock-hour boundaries (`x(hourBoundaryTime)`), not to wherever a data point happens to fall — the latter breaks down when readings are gapped (sensor/network lag), since two adjacent hours can each have their only representative point land right next to the boundary and render almost on top of each other.
+`public/app.js` polls the backend directly (no client-side router/state library). The glucose trend chart is drawn to a `<canvas>` by hand in `drawChart()`, including bolus/correction/exercise event markers pulled from `GET /api/glucose-history`. Hour labels on the x-axis are anchored to actual clock-hour boundaries (`x(hourBoundaryTime)`), not to wherever a data point happens to fall — the latter breaks down when readings are gapped (sensor/network lag), since two adjacent hours can each have their only representative point land right next to the boundary and render almost on top of each other.
 
-The exercise event's shaded width converts `duration` (minutes) to pixels via `duration*60000/tRange*cW` - i.e. relative to the chart's actual visible time span, not the nominal range-button value (`chartHours`), which don't necessarily match and previously produced a width so small it always hit the 20px floor regardless of how long the workout actually was.
+The exercise event's shaded width converts `duration` (minutes) to pixels via `duration*60000/tRange*cW` - i.e. relative to the chart's actual visible time span, not the nominal range-button value (`chartHours`), which don't necessarily match and previously produced a width so small it always hit the 20px floor regardless of how long the workout actually was. The band is also clamped to the plot's right edge so a just-finished workout doesn't paint into the axis padding.
+
+UI conventions worth keeping: inputs are 16px (anything smaller triggers iOS Safari's auto-zoom on focus); destructive taps (`delEntry`, `delWorkout`, preset removes) go through `confirm()`; transient feedback (settings saved, API errors) uses the fixed-position `toast()` rather than inline per-card messages (the old inline `#settingsMsg` was invisible when saving from the Body Profile card); keystroke-driven suggestion lookups (`updateMealSuggestion`/`updateCorrSuggestion`) are debounced 300ms so typing "45" doesn't fire a request for "4"; the 60s refresh interval includes `fetchEntries()` so a correction that resolves server-side shows up without a manual action.
 
 `updateBasalStatus()` (called from `render()`, so it ticks every 30s independent of any refetch) shows a countdown to the next Lantus dose (24h since the last one) and switches the whole basal card into a pulsing red `.basal-overdue` state once that window has passed — deliberately more attention-grabbing than the rest of the UI, since a missed basal dose matters more than most other logging gaps.
 

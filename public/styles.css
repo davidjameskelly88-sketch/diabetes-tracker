@@ -1,0 +1,94 @@
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f1f5f9;--card:#fff;--border:#e2e8f0;--text:#1e293b;--dim:#94a3b8;--blue:#2563eb;--blue-l:#dbeafe;--green:#16a34a;--green-l:#dcfce7;--red:#dc2626;--red-l:#fee2e2;--orange:#ea580c;--orange-l:#ffedd5;--purple:#7c3aed;--purple-l:#ede9fe;--r:16px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);max-width:480px;margin:0 auto;padding:16px;padding-bottom:60px;min-height:100vh}
+.card{background:var(--card);border-radius:var(--r);padding:16px;border:1px solid var(--border);margin-bottom:12px}
+.card-title{font-size:13px;font-weight:600;color:#475569;margin-bottom:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.stat{background:var(--card);border-radius:var(--r);padding:14px;border:1px solid var(--border)}
+.stat-label{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:4px}
+.stat-val{font-size:24px;font-weight:700}.stat-val .u{font-size:13px;font-weight:400;color:var(--dim);margin-left:2px}
+.blue{color:var(--blue)}
+.glucose{position:relative;background:var(--card);border-radius:var(--r);padding:20px;border:2px solid var(--border);margin-bottom:12px;text-align:center;transition:border-color .3s}
+.g-delta{position:absolute;top:10px;right:12px;font-size:11px;font-weight:600;color:var(--dim);background:var(--bg);padding:3px 8px;border-radius:8px}
+.glucose.ok{border-color:var(--green)}.glucose.high{border-color:var(--orange)}.glucose.low{border-color:var(--red)}
+.g-val{font-size:48px;font-weight:800;line-height:1.1;display:flex;align-items:baseline;justify-content:center;gap:6px}
+.g-val .u{font-size:16px;font-weight:400;color:var(--dim)}.g-trend{font-size:32px;margin-left:4px}
+.g-meta{font-size:12px;color:var(--dim);margin-top:6px}
+.chart-wrap{position:relative;height:150px;margin-top:8px}.chart-wrap canvas{width:100%;height:100%}
+.chart-range{display:flex;gap:4px;margin-bottom:8px}.chart-range button{padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);font-size:11px;font-weight:600;color:var(--dim);cursor:pointer}.chart-range button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.qc{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.qc button{padding:6px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg);font-size:12px;font-weight:600;color:#475569;cursor:pointer;transition:all .15s}
+.qc button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.input-row{display:flex;gap:10px;margin-bottom:12px}.ig{flex:1}
+.ig label{display:block;font-size:11px;color:var(--dim);margin-bottom:4px;font-weight:500}
+/* 16px inputs, not 14 - anything smaller triggers iOS Safari's auto-zoom on focus, which is
+   the single most annoying thing that can happen mid-log on a phone. */
+.ig input,.ig select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg)}
+.ig input:focus,.ig select:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
+.btn{width:100%;padding:12px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
+.btn:disabled{opacity:.4;cursor:not-allowed}.btn-blue{background:var(--blue);color:#fff}.btn-dark{background:var(--text);color:#fff}
+.btn-orange{background:var(--orange);color:#fff}.btn-sm{width:auto;padding:8px 16px;font-size:12px}
+.basal-header{display:flex;justify-content:space-between;align-items:center}
+.basal-toggle{font-size:12px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none}
+#basalCard{transition:background-color .3s,border-color .3s}
+.basal-status{font-size:13px;font-weight:600;margin-top:8px;color:var(--dim)}
+#basalCard.basal-due-soon{border-color:var(--orange)}
+#basalCard.basal-due-soon .basal-status{color:var(--orange)}
+#basalCard.basal-overdue{border-color:var(--red);background:var(--red-l);animation:basal-pulse 2s ease-in-out infinite}
+#basalCard.basal-overdue .basal-status{color:var(--red);font-size:14px}
+@keyframes basal-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.25)}50%{box-shadow:0 0 0 6px rgba(220,38,38,0)}}
+.basal-form{display:none;margin-top:12px;flex-direction:column;gap:10px}.basal-form.vis{display:flex}
+.basal-row{display:flex;gap:10px}
+.basal-row input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg)}
+.basal-row input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
+.basal-row button{padding:10px 20px;border-radius:10px;border:none;background:var(--text);color:#fff;font-size:13px;font-weight:600;cursor:pointer}
+.rings{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}.ring-item{text-align:center}
+.ring-item .val{font-size:18px;font-weight:700}.ring-item .lbl{font-size:10px;color:var(--dim);margin-top:2px}
+.workout{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}.workout:last-child{border-bottom:none}
+.w-icon{width:32px;height:32px;border-radius:8px;background:var(--green-l);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.w-info{flex:1}.w-name{font-size:13px;font-weight:600}.w-detail{font-size:11px;color:var(--dim)}
+.insight{padding:10px 12px;border-radius:10px;margin-bottom:8px;font-size:13px;line-height:1.5}
+.insight.positive{background:var(--green-l);color:#15803d}.insight.warning{background:var(--orange-l);color:#c2410c}.insight.info{background:var(--blue-l);color:#1d4ed8}
+.log-entry{background:var(--card);border-radius:12px;padding:10px 14px;border:1px solid var(--border);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+.log-left{display:flex;align-items:center;gap:10px}
+.log-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.log-dot.bolus{background:var(--blue)}.log-dot.basal{background:var(--purple)}.log-dot.correction{background:var(--orange)}
+.log-primary{font-size:13px;font-weight:600}.log-primary .sub{font-weight:400;color:var(--dim)}
+.log-secondary{font-size:11px;color:var(--dim)}.log-del{background:none;border:none;color:#cbd5e1;cursor:pointer;padding:4px;font-size:16px}.log-del:hover{color:var(--red)}
+.empty{text-align:center;color:var(--dim);font-size:13px;padding:24px 0}
+.footer{font-size:10px;color:#cbd5e1;text-align:center;margin-top:24px;line-height:1.6}
+.tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border-radius:12px;padding:4px;border:1px solid var(--border);position:sticky;top:8px;z-index:10;box-shadow:0 2px 8px rgba(15,23,42,.06)}
+.tab{flex:1;padding:8px;border-radius:8px;border:none;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:var(--dim);text-align:center}.tab.on{background:var(--blue);color:#fff}
+.panel{display:none}.panel.vis{display:block}
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:80vh;flex-direction:column;gap:16px}
+.login-wrap h1{font-size:24px;font-weight:700}
+.login-wrap input{padding:12px 16px;border-radius:12px;border:1px solid var(--border);font-size:16px;width:260px;text-align:center;outline:none}
+.login-wrap input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
+.login-err{color:var(--red);font-size:13px;display:none}
+.summary-row{background:var(--card);border-radius:var(--r);padding:14px 16px;border:1px solid var(--border);margin-bottom:12px;display:flex;justify-content:space-between;font-size:13px}
+.summary-item label{display:block;font-size:11px;color:var(--dim);margin-bottom:2px}.summary-item span{font-weight:600}
+.corr-result{font-size:11px;margin-top:4px;padding:4px 8px;border-radius:6px;display:inline-block}
+.corr-result.pending{background:var(--blue-l);color:var(--blue)}.corr-result.done{background:var(--green-l);color:var(--green)}
+.daily-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}
+.daily-stat{text-align:center;padding:10px;background:var(--bg);border-radius:10px}
+.daily-stat .dv{font-size:20px;font-weight:700}.daily-stat .dl{font-size:10px;color:var(--dim);margin-top:2px}
+.suggest-box{background:var(--purple-l);border-radius:10px;padding:10px 12px;margin-top:8px;margin-bottom:8px;font-size:12px;color:#5b21b6}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
+.grid3 .stat{padding:10px}
+.grid3 .stat-val{font-size:19px}
+.backdate-toggle{font-size:11px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none;padding:0;margin-bottom:10px;display:block}
+.backdate-input{display:none;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg);margin-bottom:12px}
+.backdate-input.vis{display:block}
+.log-actions{display:flex;gap:2px;align-items:center;flex-shrink:0}
+.log-edit{background:none;border:none;color:#cbd5e1;cursor:pointer;padding:4px;font-size:14px}.log-edit:hover{color:var(--blue)}
+.edit-entry{display:block!important}
+.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.edit-hint{font-size:11px;color:var(--dim);margin-bottom:10px}
+.edit-actions{display:flex;gap:8px}
+.edit-actions .btn{width:auto;flex:1}
+/* Transient feedback for saves/errors - fixed so it's visible no matter which card's button
+   was tapped (the old inline #settingsMsg rendered inside a different card than the Body
+   Profile save button that triggered it). */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--text);color:#fff;padding:10px 18px;border-radius:12px;font-size:13px;font-weight:500;opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;max-width:90%;text-align:center}
+#toast.vis{opacity:1}
+#toast.err{background:var(--red)}
