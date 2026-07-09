@@ -41,6 +41,26 @@ function calcIOB() { const now = Date.now(); let t = 0; for (const b of boluses)
 // ─── Small helpers ──────────────────────────────────────────────────────
 function timeAgo(ts) { const d = Math.floor((Date.now() - ts) / 60000); if (d < 1) return 'just now'; if (d < 60) return d + 'm ago'; const h = Math.floor(d / 60), m = d % 60; if (h < 24) return h + 'h ' + m + 'm ago'; return Math.floor(h / 24) + 'd ago'; }
 function fmtTime(ts) { return new Date(ts).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }); }
+function fmtClock(ts) { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+function dayLabel(ts) {
+  const d = new Date(ts), today = new Date(), yest = new Date();
+  yest.setDate(yest.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yest.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+// The history lists cap at a handful of rows with a "Show more" expander - they'd otherwise
+// grow into ever-longer scrolls (entries alone can be 20+ within a couple of days).
+let expandedLists = { log: false, workouts: false, corr: false };
+function toggleLog() { expandedLists.log = !expandedLists.log; render(); }
+function toggleWorkouts() { expandedLists.workouts = !expandedLists.workouts; loadActivities(); }
+function toggleCorr() { expandedLists.corr = !expandedLists.corr; loadCorrHistory(); }
+function showMoreBtn(total, limit, expanded, minVisible, toggleFn) {
+  if (total > limit) return `<button class="show-more" onclick="${toggleFn}()">Show ${total - limit} more</button>`;
+  if (expanded && total > minVisible) return `<button class="show-more" onclick="${toggleFn}()">Show less</button>`;
+  return '';
+}
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 // Transient feedback for saves and errors, visible regardless of which card triggered it.
@@ -87,13 +107,24 @@ async function fetchGlucose() {
     if (d.value < settings.targetLow) { cls = 'low'; col = '#dc2626'; } else if (d.value > settings.targetHigh) { cls = 'high'; col = '#ea580c'; }
     card.className = `glucose ${cls}`;
     const deltaHtml = d.delta != null ? `<div class="g-delta">${d.delta > 0 ? '+' : ''}${d.delta} (${d.deltaMinutes}m)</div>` : '';
-    disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div><div class="g-meta">${d.trendLabel || ''} · ${timeAgo(new Date(d.timestamp || d.fetchedAt).getTime())}</div>`;
+    // No trend-label/"Xm ago" meta line - the arrow and delta chip already say it, and the
+    // reading age mostly reflected LibreLinkUp's documented follower lag, not anything useful.
+    disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div>`;
     updateCorrSuggestion(); // keep the correction suggestion current as glucose changes, not just on typing
   } catch (e) { card.className = 'glucose'; disp.innerHTML = '<div style="color:var(--dim);font-size:13px">Could not connect</div>'; }
 }
 
 async function loadChart() {
   try { const data = await api(`/api/glucose-history?hours=${chartHours}`); drawChart(data.glucose || data, data.events || []); } catch (e) {}
+}
+
+// Live heads-ups (post-workout drop windows, stacked corrections) - shown right under the
+// glucose card where logging decisions get made, not buried in the Insights tab.
+async function loadAlerts() {
+  try {
+    const alerts = await api('/api/alerts');
+    document.getElementById('alertsBox').innerHTML = alerts.map(a => `<div class="insight ${a.type}" style="margin-bottom:12px">${a.text}</div>`).join('');
+  } catch (e) {}
 }
 
 async function loadActivities() {
@@ -107,21 +138,32 @@ async function loadActivities() {
     document.getElementById('aStand').textContent = s ? Math.round(s.standHours) : '—';
     document.getElementById('aSteps').textContent = (s && s.steps != null) ? Number(s.steps).toLocaleString() : '—';
     document.getElementById('aRHR').textContent = s && s.restingHeartRate ? s.restingHeartRate : '—';
-    const wk = acts.filter(a => a.type === 'workout').slice(0, 10);
-    if (!wk.length) { wl.innerHTML = '<div class="empty">No workouts synced yet</div>'; return; }
-    wl.innerHTML = wk.map(w => {
+    const wkAll = acts.filter(a => a.type === 'workout');
+    if (!wkAll.length) { wl.innerHTML = '<div class="empty">No workouts synced yet</div>'; return; }
+    const wLimit = expandedLists.workouts ? 30 : 5;
+    wl.innerHTML = wkAll.slice(0, wLimit).map(w => {
       const hr = w.avgHeartRate ? ` · ❤️ ${w.avgHeartRate}bpm${w.maxHeartRate ? ' (max ' + w.maxHeartRate + ')' : ''}` : '';
       const manual = w.manual ? ' <span class="sub">· manual</span>' : '';
       const del = w.manual ? `<button class="log-del" onclick="delWorkout('${w.id}')">✕</button>` : '';
       return `<div class="workout"><div class="w-icon">🏋️</div><div class="w-info"><div class="w-name">${w.workoutType || 'Exercise'}${manual}</div><div class="w-detail">${w.duration ? Math.round(w.duration) + 'min ' : ''} ${w.calories ? '· ' + Math.round(w.calories) + ' kcal ' : ''}${hr}<br>${fmtTime(new Date(w.startTime).getTime())}</div></div>${del}</div>`;
-    }).join('');
+    }).join('') + showMoreBtn(wkAll.length, wLimit, expandedLists.workouts, 5, 'toggleWorkouts');
   } catch (e) { wl.innerHTML = '<div class="empty">Could not load workouts.</div>'; }
 }
 
 // ─── Insights tab ───────────────────────────────────────────────────────
 async function loadInsights() {
   const el = document.getElementById('insightsList');
-  try { const ins = await api('/api/insights'); el.innerHTML = ins.map(i => `<div class="insight ${i.type}">${i.text}</div>`).join(''); }
+  try {
+    const ins = await api('/api/insights');
+    // Grouped by severity so the list reads as sections, not one long undifferentiated
+    // scroll - warnings surface first regardless of the order the server derived them in.
+    const sections = [['warning', '⚠️ Needs attention'], ['positive', '✅ Going well'], ['info', '💡 Worth knowing']];
+    el.innerHTML = sections.map(([t, label]) => {
+      const items = ins.filter(i => i.type === t);
+      if (!items.length) return '';
+      return `<div class="insight-group-title">${label}</div>` + items.map(i => `<div class="insight ${i.type}">${i.text}</div>`).join('');
+    }).join('') || '<div class="empty">No insights yet — keep logging.</div>';
+  }
   catch (e) { el.innerHTML = '<div class="empty">Could not load insights.</div>'; }
 }
 
@@ -139,6 +181,11 @@ async function loadInsulinHealth() {
       <div class="daily-stat"><div class="dv">${h.bolusPct != null ? h.bolusPct + '%' : '—'}</div><div class="dl">Bolus share</div></div>
       <div class="daily-stat"><div class="dv">${h.basalPct != null ? h.basalPct + '%' : '—'}</div><div class="dl">Basal share</div></div>
       <div class="daily-stat"><div class="dv">${h.bmi != null ? h.bmi : '—'}</div><div class="dl">BMI</div></div>
+    </div>
+    <div class="daily-grid">
+      <div class="daily-stat"><div class="dv" style="color:${h.tbr != null && h.tbr > 4 ? 'var(--red)' : 'inherit'}">${h.tbr != null ? h.tbr + '%' : '—'}</div><div class="dl">Below 3.9</div></div>
+      <div class="daily-stat"><div class="dv" style="color:${h.tar != null && h.tar > 25 ? 'var(--orange)' : 'inherit'}">${h.tar != null ? h.tar + '%' : '—'}</div><div class="dl">Above 10.0</div></div>
+      <div class="daily-stat"><div class="dv" style="color:${h.cv != null && h.cv > 36 ? 'var(--orange)' : 'inherit'}">${h.cv != null ? h.cv + '%' : '—'}</div><div class="dl">CV</div></div>
     </div>`;
     if (h.notes && h.notes.length) html += h.notes.map(n => `<div class="insight info">${n}</div>`).join('');
     else html += `<div class="insight info">No notable week-over-week changes yet.</div>`;
@@ -150,8 +197,10 @@ async function loadCorrHistory() {
   const el = document.getElementById('corrHistory');
   try {
     const d = await api('/api/entries');
-    const corrs = (d.corrections || []).slice(0, 10);
-    if (!corrs.length) { el.innerHTML = '<div class="empty">No corrections yet</div>'; return; }
+    const corrsAll = d.corrections || [];
+    if (!corrsAll.length) { el.innerHTML = '<div class="empty">No corrections yet</div>'; return; }
+    const cLimit = expandedLists.corr ? 30 : 5;
+    const corrs = corrsAll.slice(0, cLimit);
     el.innerHTML = corrs.map(c => {
       const interference = c.carbInterference ? ` · 🍬 ${c.interferingCarbs}g carbs during window (excluded from factor)` : '';
       const status = c.resolved
@@ -159,7 +208,7 @@ async function loadCorrHistory() {
         : `<span class="corr-result pending">Waiting (~${Math.max(0, Math.round((c.time + 180*60000 - Date.now()) / 60000))}min)</span>`;
       const context = c.recentCarbs ? `<div class="log-secondary">🍬 ${c.recentCarbs}g carbs in the 2h before this correction</div>` : '';
       return `<div class="log-entry"><div class="log-left"><div class="log-dot correction"></div><div><div class="log-primary">${c.units}u correction <span class="sub">${c.startGlucose || '?'} → target ${c.predictedGlucose || '?'}</span></div><div class="log-secondary">${fmtTime(c.time)}</div>${context}${status}</div></div></div>`;
-    }).join('');
+    }).join('') + showMoreBtn(corrsAll.length, cLimit, expandedLists.corr, 5, 'toggleCorr');
   } catch (e) { el.innerHTML = '<div class="empty">Could not load.</div>'; }
 }
 
@@ -178,6 +227,11 @@ async function loadDailySummary() {
       <div class="daily-stat"><div class="dv">${s.glucose.min || '—'}</div><div class="dl">Lowest</div></div>
       <div class="daily-stat"><div class="dv">${s.glucose.max || '—'}</div><div class="dl">Highest</div></div>
       <div class="daily-stat"><div class="dv" style="color:${s.glucose.low > 0 ? 'var(--red)' : 'inherit'}">${s.glucose.low}</div><div class="dl">Low events</div></div>
+    </div>
+    <div class="daily-grid">
+      <div class="daily-stat"><div class="dv" style="color:${s.glucose.tbr != null && s.glucose.tbr > 4 ? 'var(--red)' : 'inherit'}">${s.glucose.tbr != null ? s.glucose.tbr + '%' : '—'}</div><div class="dl">Below 3.9</div></div>
+      <div class="daily-stat"><div class="dv" style="color:${s.glucose.tar != null && s.glucose.tar > 25 ? 'var(--orange)' : 'inherit'}">${s.glucose.tar != null ? s.glucose.tar + '%' : '—'}</div><div class="dl">Above 10.0</div></div>
+      <div class="daily-stat"><div class="dv" style="color:${s.glucose.cv != null && s.glucose.cv > 36 ? 'var(--orange)' : 'inherit'}">${s.glucose.cv != null ? s.glucose.cv + '%' : '—'}</div><div class="dl">CV</div></div>
     </div>
     <div style="border-top:1px solid var(--border);margin:12px 0;padding-top:12px">
       <div class="daily-grid">
@@ -299,7 +353,7 @@ async function loadWorkoutPresets() {
   workoutPresets.forEach(p => {
     const b = document.createElement('button');
     b.textContent = p.name;
-    b.onclick = () => { document.getElementById('workoutTypeIn').value = p.name; qcEl.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); document.getElementById('addWorkoutBtn').disabled = false; };
+    b.onclick = () => { document.getElementById('workoutTypeIn').value = p.name; qcEl.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); document.getElementById('addWorkoutBtn').disabled = false; updateWorkoutAdvice(); };
     qcEl.appendChild(b);
   });
 }
@@ -377,9 +431,11 @@ async function addWorkout() {
   if (r && r.error) { toast(r.error, true); return; }
   document.getElementById('workoutTypeIn').value = ''; document.getElementById('workoutDurIn').value = ''; document.getElementById('workoutCalIn').value = '';
   document.getElementById('addWorkoutBtn').disabled = true;
+  document.getElementById('workoutAdvice').innerHTML = '';
   document.querySelectorAll('#workoutQc button').forEach(b => b.classList.remove('on'));
   resetBackdate('workoutTimeToggle', 'workoutTimeIn');
   loadActivities();
+  loadAlerts(); // a just-logged workout may open a drop-window alert immediately
 }
 
 async function delWorkout(id) {
@@ -455,11 +511,22 @@ async function updateCorrSuggestion() {
     let html = '';
     // Proactive suggestion from how far above the ideal target you are right now - shown even
     // before typing anything, with a one-tap "Use" to fill the units field.
+    if (r.stale) {
+      html += `<div class="suggest-box" style="background:var(--orange-l);color:#c2410c">⚠️ Last reading is ~${r.readingAgeMinutes}min old — check your Libre app before dosing off this.</div>`;
+    }
     if (r.factorTooLow) {
       html += `<div class="suggest-box" style="background:var(--orange-l);color:#c2410c">Your correction factor (${r.factor}/unit) looks too low to be reliable — not confident enough to suggest a dose yet. Log a few more corrections without carbs nearby to firm this up.</div>`;
     } else if (r.suggestedUnits != null) {
       if (r.suggestedUnits > 0) {
-        html += `<div class="suggest-box">Suggested: ${r.suggestedUnits}u (currently ${r.currentGlucose} mmol/L, ${(r.currentGlucose - r.idealTarget).toFixed(1)} above your ${r.idealTarget} target)${uRaw === '' ? ` <button type="button" onclick="useCorrSuggestion(${r.suggestedUnits})" style="width:auto;padding:3px 10px;margin-left:4px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-size:11px;font-weight:600;cursor:pointer">Use</button>` : ''}</div>`;
+        // Show what the number already accounts for - insulin still active and the trend
+        // projection - so the smaller-than-naive suggestion reads as deliberate, not broken.
+        const bits = [];
+        if (r.projectedGlucose != null) bits.push(`trending toward ~${r.projectedGlucose}`);
+        if (r.iob > 0.1) bits.push(`${r.iob}u on board subtracted`);
+        const detail = bits.length ? `; ${bits.join(', ')}` : '';
+        html += `<div class="suggest-box">Suggested: ${r.suggestedUnits}u (currently ${r.currentGlucose} mmol/L vs your ${r.idealTarget} target${detail})${uRaw === '' ? ` <button type="button" onclick="useCorrSuggestion(${r.suggestedUnits})" style="width:auto;padding:3px 10px;margin-left:4px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-size:11px;font-weight:600;cursor:pointer">Use</button>` : ''}</div>`;
+      } else if (r.coveredByIOB) {
+        html += `<div class="suggest-box">You're above target, but the ${r.iob}u still active should cover it — re-check in 30–45min before adding more.</div>`;
       } else {
         html += `<div class="suggest-box">You're at ${r.currentGlucose} mmol/L, at or below your ${r.idealTarget} target — no correction needed.</div>`;
       }
@@ -492,10 +559,26 @@ function updateBolusBtn() {
   btn.textContent = (u > 0) ? '＋ Log bolus' : '＋ Log carbs (no insulin)';
 }
 
+// Pre-workout advisor: as soon as a workout type is picked/typed, project what that workout
+// historically does against current glucose/trend/IOB - the answer to "I'm about to do X,
+// what should I do about it" before the session starts, not after.
+async function updateWorkoutAdvice() {
+  const type = document.getElementById('workoutTypeIn').value.trim();
+  const el = document.getElementById('workoutAdvice');
+  if (!type) { el.innerHTML = ''; return; }
+  try {
+    const a = await api('/api/workout-advice?type=' + encodeURIComponent(type));
+    const style = a.risk === 'high' ? 'background:var(--red-l);color:var(--red)'
+      : a.risk === 'caution' ? 'background:var(--orange-l);color:#c2410c' : '';
+    el.innerHTML = `<div class="suggest-box" style="${style}">${a.advice}</div>`;
+  } catch (e) { el.innerHTML = ''; }
+}
+
 // Suggestion lookups hit the API; debounce the keystroke-driven ones so typing "45" doesn't
 // fire a request for "4" first. Preset taps and glucose refreshes still call directly.
 const debouncedMealSuggestion = debounce(updateMealSuggestion, 300);
 const debouncedCorrSuggestion = debounce(updateCorrSuggestion, 300);
+const debouncedWorkoutAdvice = debounce(updateWorkoutAdvice, 400);
 
 // ─── Basal status ───────────────────────────────────────────────────────
 // Basal (Lantus) is once every 24h - surface a countdown, and make the card impossible to
@@ -527,17 +610,25 @@ function render() {
   const lba = basalDoses[0];
   document.getElementById('lastBasal').textContent = lba ? lba.units + 'u · ' + timeAgo(lba.time) : 'None';
   updateBasalStatus();
-  const all = [...boluses.map(b => ({ ...b, kind: 'bolus' })), ...basalDoses.map(b => ({ ...b, kind: 'basal' })), ...corrections.map(c => ({ ...c, kind: 'correction' }))].sort((a, b) => b.time - a.time).slice(0, 20);
+  // Day-grouped, capped log: headers carry the date so each row only needs a clock time,
+  // and the list stays a screenful with a "Show more" expander instead of an endless scroll.
+  const all = [...boluses.map(b => ({ ...b, kind: 'bolus' })), ...basalDoses.map(b => ({ ...b, kind: 'basal' })), ...corrections.map(c => ({ ...c, kind: 'correction' }))].sort((a, b) => b.time - a.time);
   const log = document.getElementById('logList');
   if (!all.length) { log.innerHTML = '<div class="empty">No entries yet</div>'; return; }
-  log.innerHTML = all.map(e => {
-    if (editingEntry && editingEntry.kind === e.kind && editingEntry.id === String(e.id)) return editFormHTML(e);
+  const limit = expandedLists.log ? 60 : 10;
+  let html = '', lastDay = null;
+  all.slice(0, limit).forEach(e => {
+    const day = dayLabel(e.time);
+    if (day !== lastDay) { html += `<div class="day-head">${day}</div>`; lastDay = day; }
+    if (editingEntry && editingEntry.kind === e.kind && editingEntry.id === String(e.id)) { html += editFormHTML(e); return; }
     let label, detail = '';
     if (e.kind === 'bolus') { label = e.units > 0 ? `Novorapid · ${e.units}u` : '🍬 Carbs only'; if (e.carbs != null) label += ` <span class="sub">· ${e.carbs}g</span>`; }
     else if (e.kind === 'basal') { label = `Lantus · ${e.units}u`; }
     else { label = `⚡ Correction · ${e.units}u`; detail = e.resolved ? ` <span class="sub">→ ${e.actualGlucose}</span>` : (e.startGlucose ? ` <span class="sub">from ${e.startGlucose}</span>` : ''); }
-    return `<div class="log-entry"><div class="log-left"><div class="log-dot ${e.kind}"></div><div><div class="log-primary">${label}${detail}</div><div class="log-secondary">${fmtTime(e.time)}</div></div></div><div class="log-actions"><button class="log-edit" onclick="startEdit('${e.kind}','${e.id}')">✎</button><button class="log-del" onclick="delEntry('${e.kind}','${e.id}')">✕</button></div></div>`;
-  }).join('');
+    html += `<div class="log-entry"><div class="log-left"><div class="log-dot ${e.kind}"></div><div><div class="log-primary">${label}${detail}</div><div class="log-secondary">${fmtClock(e.time)}</div></div></div><div class="log-actions"><button class="log-edit" onclick="startEdit('${e.kind}','${e.id}')">✎</button><button class="log-del" onclick="delEntry('${e.kind}','${e.id}')">✕</button></div></div>`;
+  });
+  html += showMoreBtn(all.length, limit, expandedLists.log, 10, 'toggleLog');
+  log.innerHTML = html;
 }
 
 // ─── Glucose chart ──────────────────────────────────────────────────────
@@ -672,7 +763,7 @@ document.getElementById('corrTargetIn').addEventListener('keydown', e => { if (e
 document.getElementById('basalToggle').addEventListener('click', function () { const f = document.getElementById('basalForm'), v = f.classList.toggle('vis'); this.textContent = v ? 'Cancel' : 'Add'; });
 document.getElementById('basalIn').addEventListener('keydown', e => { if (e.key === 'Enter') addBasal(); });
 
-document.getElementById('workoutTypeIn').addEventListener('input', function () { document.getElementById('addWorkoutBtn').disabled = !this.value.trim(); });
+document.getElementById('workoutTypeIn').addEventListener('input', function () { document.getElementById('addWorkoutBtn').disabled = !this.value.trim(); debouncedWorkoutAdvice(); });
 document.getElementById('workoutDurIn').addEventListener('keydown', e => { if (e.key === 'Enter') addWorkout(); });
 document.getElementById('workoutCalIn').addEventListener('keydown', e => { if (e.key === 'Enter') addWorkout(); });
 
@@ -684,10 +775,10 @@ document.getElementById('workoutPresetNameIn').addEventListener('keydown', e => 
 async function init() {
   // Settings first so target-range colours are correct on the very first render.
   await fetchSettings();
-  fetchEntries(); fetchGlucose(); loadChart(); loadMealPresets(); loadWorkoutPresets();
+  fetchEntries(); fetchGlucose(); loadChart(); loadAlerts(); loadMealPresets(); loadWorkoutPresets();
   setInterval(render, 30000); // ticks IOB/COB/basal countdown between fetches
   // fetchEntries included so server-side changes (a correction resolving on a glucose poll)
   // show up without requiring a manual log action or reload.
-  setInterval(() => { fetchGlucose(); loadChart(); fetchEntries(); }, 60000);
+  setInterval(() => { fetchGlucose(); loadChart(); fetchEntries(); loadAlerts(); }, 60000);
 }
 checkAuth();
