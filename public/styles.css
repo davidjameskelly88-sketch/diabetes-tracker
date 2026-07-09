@@ -1,32 +1,73 @@
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#f1f5f9;--card:#fff;--border:#e2e8f0;--text:#1e293b;--dim:#94a3b8;--blue:#2563eb;--blue-l:#dbeafe;--green:#16a34a;--green-l:#dcfce7;--red:#dc2626;--red-l:#fee2e2;--orange:#ea580c;--orange-l:#ffedd5;--purple:#7c3aed;--purple-l:#ede9fe;--r:16px}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);max-width:480px;margin:0 auto;padding:16px;padding-bottom:60px;min-height:100vh}
-.card{background:var(--card);border-radius:var(--r);padding:16px;border:1px solid var(--border);margin-bottom:12px}
-.card-title{font-size:13px;font-weight:600;color:#475569;margin-bottom:12px}
+/* Theme tokens. The glucose status trio (red/green/orange) is validated for CVD separation
+   and contrast on both surfaces (dataviz six-checks) - light keeps 600-weight steps; dark
+   only brightens red to #ef4444, which is what passes the dark lightness band. Chart canvas
+   colors (--c-*) live here too so drawChart() can read them via getComputedStyle and follow
+   the theme - canvas can't inherit CSS vars by itself. */
+:root{
+  --bg:#f1f5f9;--card:#fff;--border:#e2e8f0;--text:#1e293b;--ink-2:#475569;--dim:#94a3b8;
+  --blue:#2563eb;--blue-l:#dbeafe;--green:#16a34a;--green-l:#dcfce7;--red:#dc2626;--red-l:#fee2e2;
+  --orange:#ea580c;--orange-l:#ffedd5;--purple:#7c3aed;--purple-l:#ede9fe;--r:16px;
+  --c-grid:#e2e8f0;--c-label:#94a3b8;--c-band:rgba(34,197,94,.08);--c-iob:rgba(37,99,235,.15);
+  --tip-bg:#1e293b;--tip-tx:#f1f5f9;--skel-shine:rgba(255,255,255,.5);
+  --shadow:0 2px 8px rgba(15,23,42,.06);
+}
+html.dark{
+  --bg:#0b1220;--card:#151e2e;--border:#293548;--text:#e2e8f0;--ink-2:#b7c3d4;--dim:#64748b;
+  --blue:#3b82f6;--blue-l:rgba(59,130,246,.16);--green:#16a34a;--green-l:rgba(34,197,94,.16);
+  --red:#ef4444;--red-l:rgba(239,68,68,.16);--orange:#ea580c;--orange-l:rgba(249,115,22,.16);
+  --purple:#8b5cf6;--purple-l:rgba(139,92,246,.18);
+  --c-grid:#26324a;--c-label:#64748b;--c-band:rgba(34,197,94,.10);--c-iob:rgba(59,130,246,.18);
+  --tip-bg:#e2e8f0;--tip-tx:#0b1220;--skel-shine:rgba(255,255,255,.07);
+  --shadow:0 2px 10px rgba(0,0,0,.35);
+}
+html{background:var(--bg)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);max-width:480px;margin:0 auto;padding:16px;padding-bottom:60px;min-height:100vh;transition:background-color .25s,color .25s}
+.card{background:var(--card);border-radius:var(--r);padding:16px;border:1px solid var(--border);margin-bottom:12px;transition:background-color .25s,border-color .25s}
+.card-title{font-size:13px;font-weight:600;color:var(--ink-2);margin-bottom:12px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
 .stat{background:var(--card);border-radius:var(--r);padding:14px;border:1px solid var(--border)}
 .stat-label{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:4px}
 .stat-val{font-size:24px;font-weight:700}.stat-val .u{font-size:13px;font-weight:400;color:var(--dim);margin-left:2px}
 .blue{color:var(--blue)}
-.glucose{position:relative;background:var(--card);border-radius:var(--r);padding:20px;border:2px solid var(--border);margin-bottom:12px;text-align:center;transition:border-color .3s}
+/* Decay bar + microtext inside the IOB/COB tiles - the thin bar drains as the dose/carbs
+   absorb, the subtext says when it peaks or when it's gone. */
+.tile-bar{height:4px;border-radius:2px;background:var(--border);margin-top:8px;overflow:hidden}
+.tile-bar i{display:block;height:100%;border-radius:2px;background:var(--blue);transition:width .6s cubic-bezier(.4,0,.2,1)}
+.tile-bar i.carb{background:var(--orange)}
+.tile-sub{font-size:10px;color:var(--dim);margin-top:4px;min-height:12px}
+.glucose{position:relative;background:var(--card);border-radius:var(--r);padding:20px;border:2px solid var(--border);margin-bottom:12px;text-align:center;transition:border-color .3s,background-color .25s}
 .g-delta{position:absolute;top:10px;right:12px;font-size:11px;font-weight:600;color:var(--dim);background:var(--bg);padding:3px 8px;border-radius:8px}
 .glucose.ok{border-color:var(--green)}.glucose.high{border-color:var(--orange)}.glucose.low{border-color:var(--red)}
 .g-val{font-size:48px;font-weight:800;line-height:1.1;display:flex;align-items:baseline;justify-content:center;gap:6px}
+.g-val.pop{animation:gPop .45s cubic-bezier(.34,1.56,.64,1)}
+@keyframes gPop{0%{transform:scale(.94)}60%{transform:scale(1.04)}100%{transform:scale(1)}}
 .g-val .u{font-size:16px;font-weight:400;color:var(--dim)}.g-trend{font-size:32px;margin-left:4px}
 .g-meta{font-size:12px;color:var(--dim);margin-top:6px}
-.chart-wrap{position:relative;height:150px;margin-top:8px}.chart-wrap canvas{width:100%;height:100%}
-.chart-range{display:flex;gap:4px;margin-bottom:8px}.chart-range button{padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);font-size:11px;font-weight:600;color:var(--dim);cursor:pointer}.chart-range button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.chart-wrap{position:relative;height:150px;margin-top:8px}.chart-wrap canvas{width:100%;height:100%;touch-action:pan-y}
+.chart-wrap canvas.reveal{animation:chartWipe .55s cubic-bezier(.4,0,.2,1) both}
+@keyframes chartWipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+/* Scrub tooltip - HTML, not canvas text, so it stays crisp at any DPR. */
+.chart-tip{position:absolute;background:var(--tip-bg);color:var(--tip-tx);padding:6px 10px;border-radius:8px;font-size:11px;font-weight:600;line-height:1.5;pointer-events:none;white-space:nowrap;transform:translate(-50%,-112%);z-index:6;box-shadow:var(--shadow);display:none}
+.chart-tip .tip-ev{font-weight:500;opacity:.85}
+/* Pulsing marker on the most recent reading - "this is live". Hidden while scrubbing. */
+.live-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--green);transform:translate(-50%,-50%);pointer-events:none;z-index:5}
+.live-dot::after{content:'';position:absolute;inset:-3px;border-radius:50%;background:inherit;animation:livePulse 2.2s ease-out infinite}
+@keyframes livePulse{0%{transform:scale(.5);opacity:.45}70%{transform:scale(2);opacity:0}100%{transform:scale(2);opacity:0}}
+.chart-range{display:flex;gap:4px;margin-bottom:8px}.chart-range button{padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);font-size:11px;font-weight:600;color:var(--dim);cursor:pointer;transition:transform .1s,background-color .15s}.chart-range button.on{background:var(--blue);color:#fff;border-color:var(--blue)}.chart-range button:active{transform:scale(.93)}
 .qc{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-.qc button{padding:6px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg);font-size:12px;font-weight:600;color:#475569;cursor:pointer;transition:all .15s}
+.qc button{padding:6px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg);font-size:12px;font-weight:600;color:var(--ink-2);cursor:pointer;transition:all .15s}
 .qc button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.qc button:active{transform:scale(.94)}
 .input-row{display:flex;gap:10px;margin-bottom:12px}.ig{flex:1}
 .ig label{display:block;font-size:11px;color:var(--dim);margin-bottom:4px;font-weight:500}
 /* 16px inputs, not 14 - anything smaller triggers iOS Safari's auto-zoom on focus, which is
    the single most annoying thing that can happen mid-log on a phone. */
-.ig input,.ig select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg)}
+.ig input,.ig select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg);color:var(--text);color-scheme:light dark}
 .ig input:focus,.ig select:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
-.btn{width:100%;padding:12px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
-.btn:disabled{opacity:.4;cursor:not-allowed}.btn-blue{background:var(--blue);color:#fff}.btn-dark{background:var(--text);color:#fff}
+.btn{width:100%;padding:12px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:transform .12s,opacity .15s}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.4;cursor:not-allowed}.btn-blue{background:var(--blue);color:#fff}.btn-dark{background:var(--text);color:var(--bg)}
 .btn-orange{background:var(--orange);color:#fff}.btn-sm{width:auto;padding:8px 16px;font-size:12px}
 .basal-header{display:flex;justify-content:space-between;align-items:center}
 .basal-toggle{font-size:12px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none}
@@ -39,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 @keyframes basal-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.25)}50%{box-shadow:0 0 0 6px rgba(220,38,38,0)}}
 .basal-form{display:none;margin-top:12px;flex-direction:column;gap:10px}.basal-form.vis{display:flex}
 .basal-row{display:flex;gap:10px}
-.basal-row input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg)}
+.basal-row input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg);color:var(--text)}
 .basal-row input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
-.basal-row button{padding:10px 20px;border-radius:10px;border:none;background:var(--text);color:#fff;font-size:13px;font-weight:600;cursor:pointer}
+.basal-row button{padding:10px 20px;border-radius:10px;border:none;background:var(--text);color:var(--bg);font-size:13px;font-weight:600;cursor:pointer}
 .rings{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}.ring-item{text-align:center}
 .ring-item .val{font-size:18px;font-weight:700}.ring-item .lbl{font-size:10px;color:var(--dim);margin-top:2px}
 .workout{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}.workout:last-child{border-bottom:none}
@@ -49,20 +90,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .w-info{flex:1}.w-name{font-size:13px;font-weight:600}.w-detail{font-size:11px;color:var(--dim)}
 .insight{padding:10px 12px;border-radius:10px;margin-bottom:8px;font-size:13px;line-height:1.5}
 .insight.positive{background:var(--green-l);color:#15803d}.insight.warning{background:var(--orange-l);color:#c2410c}.insight.info{background:var(--blue-l);color:#1d4ed8}
+html.dark .insight.positive{color:#4ade80}html.dark .insight.warning{color:#fb923c}html.dark .insight.info{color:#93b4f8}
 .log-entry{background:var(--card);border-radius:12px;padding:10px 14px;border:1px solid var(--border);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
 .log-left{display:flex;align-items:center;gap:10px}
 .log-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .log-dot.bolus{background:var(--blue)}.log-dot.basal{background:var(--purple)}.log-dot.correction{background:var(--orange)}
 .log-primary{font-size:13px;font-weight:600}.log-primary .sub{font-weight:400;color:var(--dim)}
-.log-secondary{font-size:11px;color:var(--dim)}.log-del{background:none;border:none;color:#cbd5e1;cursor:pointer;padding:4px;font-size:16px}.log-del:hover{color:var(--red)}
+.log-secondary{font-size:11px;color:var(--dim)}.log-del{background:none;border:none;color:var(--dim);cursor:pointer;padding:4px;font-size:16px}.log-del:hover{color:var(--red)}
 .empty{text-align:center;color:var(--dim);font-size:13px;padding:24px 0}
-.footer{font-size:10px;color:#cbd5e1;text-align:center;margin-top:24px;line-height:1.6}
-.tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border-radius:12px;padding:4px;border:1px solid var(--border);position:sticky;top:8px;z-index:10;box-shadow:0 2px 8px rgba(15,23,42,.06)}
-.tab{flex:1;padding:8px;border-radius:8px;border:none;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:var(--dim);text-align:center}.tab.on{background:var(--blue);color:#fff}
+.footer{font-size:10px;color:var(--dim);opacity:.7;text-align:center;margin-top:24px;line-height:1.6}
+.tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border-radius:12px;padding:4px;border:1px solid var(--border);position:sticky;top:8px;z-index:10;box-shadow:var(--shadow)}
+/* Sliding pill behind the active tab - moved by JS to the active button's offset. */
+.tab-glider{position:absolute;top:4px;bottom:4px;border-radius:8px;background:var(--blue);transition:left .28s cubic-bezier(.4,0,.2,1),width .28s cubic-bezier(.4,0,.2,1);z-index:0}
+.tab{flex:1;padding:8px;border-radius:8px;border:none;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:var(--dim);text-align:center;position:relative;z-index:1;transition:color .2s}.tab.on{color:#fff}
 .panel{display:none}.panel.vis{display:block}
+/* Staggered entrance for a freshly-opened tab's cards. Capped at 8 children; anything past
+   that appears instantly (it's below the fold anyway). */
+.panel.enter>*{animation:cardIn .3s cubic-bezier(.4,0,.2,1) both}
+.panel.enter>*:nth-child(2){animation-delay:.04s}.panel.enter>*:nth-child(3){animation-delay:.08s}
+.panel.enter>*:nth-child(4){animation-delay:.12s}.panel.enter>*:nth-child(5){animation-delay:.16s}
+.panel.enter>*:nth-child(6){animation-delay:.2s}.panel.enter>*:nth-child(7){animation-delay:.24s}
+.panel.enter>*:nth-child(8){animation-delay:.28s}
+@keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .login-wrap{display:flex;align-items:center;justify-content:center;min-height:80vh;flex-direction:column;gap:16px}
 .login-wrap h1{font-size:24px;font-weight:700}
-.login-wrap input{padding:12px 16px;border-radius:12px;border:1px solid var(--border);font-size:16px;width:260px;text-align:center;outline:none}
+.login-wrap input{padding:12px 16px;border-radius:12px;border:1px solid var(--border);font-size:16px;width:260px;text-align:center;outline:none;background:var(--card);color:var(--text)}
 .login-wrap input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-l)}
 .login-err{color:var(--red);font-size:13px;display:none}
 .summary-row{background:var(--card);border-radius:var(--r);padding:14px 16px;border:1px solid var(--border);margin-bottom:12px;display:flex;justify-content:space-between;font-size:13px}
@@ -73,14 +125,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .daily-stat{text-align:center;padding:10px;background:var(--bg);border-radius:10px}
 .daily-stat .dv{font-size:20px;font-weight:700}.daily-stat .dl{font-size:10px;color:var(--dim);margin-top:2px}
 .suggest-box{background:var(--purple-l);border-radius:10px;padding:10px 12px;margin-top:8px;margin-bottom:8px;font-size:12px;color:#5b21b6}
+html.dark .suggest-box{color:#c4b5fd}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
 .grid3 .stat{padding:10px}
 .grid3 .stat-val{font-size:19px}
 .backdate-toggle{font-size:11px;color:var(--blue);font-weight:600;cursor:pointer;background:none;border:none;padding:0;margin-bottom:10px;display:block}
-.backdate-input{display:none;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg);margin-bottom:12px}
+.backdate-input{display:none;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);font-size:16px;outline:none;background:var(--bg);color:var(--text);margin-bottom:12px;color-scheme:light dark}
 .backdate-input.vis{display:block}
 .log-actions{display:flex;gap:2px;align-items:center;flex-shrink:0}
-.log-edit{background:none;border:none;color:#cbd5e1;cursor:pointer;padding:4px;font-size:14px}.log-edit:hover{color:var(--blue)}
+.log-edit{background:none;border:none;color:var(--dim);cursor:pointer;padding:4px;font-size:14px}.log-edit:hover{color:var(--blue)}
 .edit-entry{display:block!important}
 .edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
 .edit-hint{font-size:11px;color:var(--dim);margin-bottom:10px}
@@ -92,9 +145,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 #logList .day-head:first-child,#insightsList .insight-group-title:first-child{margin-top:0}
 .show-more{width:100%;padding:9px;border-radius:10px;border:1px dashed var(--border);background:transparent;color:var(--blue);font-size:12px;font-weight:600;cursor:pointer;margin-top:2px}
 .show-more:hover{border-color:var(--blue)}
+/* Time-in-range meter: stacked status segments (below / in / above), 2px surface gaps so
+   adjacent fills never touch (dataviz mark spec), legend carries the labels - identity is
+   position + label, never color alone. */
+.tir-bar{display:flex;gap:2px;height:14px;border-radius:7px;overflow:hidden;margin-bottom:6px}
+.tir-bar i{display:block;height:100%;transition:width .8s cubic-bezier(.4,0,.2,1);min-width:0}
+.tir-bar i.low{background:var(--red);border-radius:7px 0 0 7px}
+.tir-bar i.in{background:var(--green)}
+.tir-bar i.high{background:var(--orange);border-radius:0 7px 7px 0}
+.tir-legend{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:12px}
+.tir-legend b{color:var(--ink-2);font-weight:600}
+.tir-legend .chip{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:4px;vertical-align:baseline}
+/* Skeleton shimmer for first-load placeholders. */
+.skel{position:relative;overflow:hidden;background:var(--border);border-radius:8px;height:14px;margin-bottom:10px}
+.skel.tall{height:52px;border-radius:10px}
+.skel::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--skel-shine),transparent);animation:shimmer 1.2s infinite}
+@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 /* Transient feedback for saves/errors - fixed so it's visible no matter which card's button
    was tapped (the old inline #settingsMsg rendered inside a different card than the Body
    Profile save button that triggered it). */
-#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--text);color:#fff;padding:10px 18px;border-radius:12px;font-size:13px;font-weight:500;opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;max-width:90%;text-align:center}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--tip-bg);color:var(--tip-tx);padding:10px 18px;border-radius:12px;font-size:13px;font-weight:500;opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;max-width:90%;text-align:center}
 #toast.vis{opacity:1}
-#toast.err{background:var(--red)}
+#toast.err{background:var(--red);color:#fff}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}

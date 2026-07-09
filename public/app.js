@@ -3,6 +3,47 @@ let boluses = [], basalDoses = [], corrections = [], chartHours = 6;
 let settings = { targetLow: 4, targetHigh: 10, carbRatio: null };
 let editingEntry = null;
 
+// ─── Theme ──────────────────────────────────────────────────────────────
+// 'auto' follows prefers-color-scheme; explicit choices persist in localStorage. The canvas
+// chart doesn't inherit CSS vars, so applyTheme() redraws it from cached state - cssVar()
+// is how all canvas colors stay theme-correct.
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function themePref() { try { return localStorage.getItem('theme') || 'auto'; } catch (e) { return 'auto'; } }
+function applyTheme() {
+  const pref = themePref();
+  const dark = pref === 'dark' || (pref === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.classList.toggle('dark', dark);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = dark ? '#0b1220' : '#f1f5f9';
+  if (window._chart) drawChart(_chart.data, _chart.events);
+  requestAnimationFrame(moveGlider);
+}
+function setTheme(pref) {
+  try { localStorage.setItem('theme', pref); } catch (e) {}
+  applyTheme(); renderThemeSeg();
+}
+function renderThemeSeg() {
+  const el = document.getElementById('themeSeg');
+  if (!el) return;
+  el.innerHTML = '';
+  [['auto', 'Auto'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].forEach(([v, label]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (themePref() === v) b.classList.add('on');
+    b.onclick = () => setTheme(v);
+    el.appendChild(b);
+  });
+}
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (themePref() === 'auto') applyTheme(); });
+
+function hexToRgba(hex, a) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+function statusColorVar(v) { return v < settings.targetLow ? '--red' : v > settings.targetHigh ? '--orange' : '--green'; }
+function buzz(pattern) { if (navigator.vibrate) navigator.vibrate(pattern || 10); }
+
 // ─── Insulin / carb models ──────────────────────────────────────────────
 // Exponential insulin-action model (Loop/OpenAPS style) for Novorapid: peak activity at
 // IOB_PEAK minutes, fully absorbed by IOB_DIA minutes. Replaces a naive linear decay, which
@@ -62,6 +103,20 @@ function showMoreBtn(total, limit, expanded, minVisible, toggleFn) {
   return '';
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+function tweenNumber(el, from, to, ms) {
+  const t0 = performance.now();
+  const ease = x => 1 - Math.pow(1 - x, 3);
+  (function step(t) {
+    const p = Math.min(1, (t - t0) / ms);
+    el.textContent = (from + (to - from) * ease(p)).toFixed(1);
+    if (p < 1 && el.isConnected) requestAnimationFrame(step);
+  })(t0);
+}
+// Shimmer placeholders for first-open loads (dataset.loaded guards against re-flashing on
+// the 60s background refreshes).
+function skeleton(el, rows, tall) {
+  el.innerHTML = Array.from({ length: rows || 3 }, () => `<div class="skel${tall ? ' tall' : ''}"></div>`).join('');
+}
 
 // Transient feedback for saves and errors, visible regardless of which card triggered it.
 let toastTimer = null;
@@ -73,6 +128,7 @@ function toast(msg, isError) {
   // Force a reflow so back-to-back toasts restart the fade
   void el.offsetWidth;
   el.classList.add('vis');
+  buzz(isError ? [20, 40, 20] : 10);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('vis'), 2200);
 }
@@ -85,37 +141,87 @@ function showApp() { document.getElementById('loginPage').style.display = 'none'
 async function api(u, o) { const r = await fetch(u, o); if (r.status === 401) location.reload(); return r.json(); }
 
 // ─── Tabs ───────────────────────────────────────────────────────────────
+// The glider is the sliding pill behind the active tab; panels get a staggered card
+// entrance on open (remove+reflow+add so it re-triggers every switch).
+function moveGlider() {
+  const g = document.getElementById('tabGlider'), on = document.querySelector('.tab.on');
+  if (!g || !on || !on.offsetWidth) return;
+  g.style.left = on.offsetLeft + 'px';
+  g.style.width = on.offsetWidth + 'px';
+}
+window.addEventListener('resize', moveGlider);
+
 function showTab(t) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('vis'));
-  document.getElementById('panel-' + t).classList.add('vis');
+  const panel = document.getElementById('panel-' + t);
+  panel.classList.add('vis');
+  panel.classList.remove('enter'); void panel.offsetWidth; panel.classList.add('enter');
+  moveGlider();
+  // Repaint the chart from cache when Track becomes visible - a theme change while another
+  // tab was open skipped its redraw (hidden canvas measures 0x0, see drawChart).
+  if (t === 'track') requestAnimationFrame(() => { if (window._chart) drawChart(_chart.data, _chart.events); });
   if (t === 'activity') loadActivities();
   if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); }
   if (t === 'summary') loadDailySummary();
-  if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); }
+  if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); renderThemeSeg(); }
 }
+
+// Swipe left/right anywhere outside the chart (which owns horizontal drags for scrubbing)
+// to move between tabs - thresholds tuned so vertical scrolling never misfires.
+(function wireSwipe() {
+  const order = ['track', 'activity', 'insights', 'summary', 'settings'];
+  let sx = 0, sy = 0, ok = false;
+  document.addEventListener('touchstart', e => {
+    ok = !e.target.closest('.chart-wrap,input,select,textarea');
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (!ok) return;
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < 2.2 * Math.abs(dy)) return;
+    const cur = order.indexOf((document.querySelector('.tab.on') || {}).dataset && document.querySelector('.tab.on').dataset.tab);
+    const next = cur + (dx < 0 ? 1 : -1);
+    if (cur >= 0 && next >= 0 && next < order.length) showTab(order[next]);
+  }, { passive: true });
+})();
 
 // ─── Data fetching ──────────────────────────────────────────────────────
 async function fetchEntries() { const d = await api('/api/entries'); boluses = d.boluses || []; basalDoses = d.basalDoses || []; corrections = d.corrections || []; render(); }
 
+let _gShown = null; // last value displayed, so a fresh reading tweens instead of snapping
 async function fetchGlucose() {
   const card = document.getElementById('gCard'), disp = document.getElementById('gDisplay');
   try {
     const d = await api('/api/glucose');
     if (d.error) { card.className = 'glucose'; disp.innerHTML = `<div style="color:var(--dim);font-size:13px;padding:10px 0">${d.error}</div>`; return; }
-    let cls = 'ok', col = '#16a34a';
-    if (d.value < settings.targetLow) { cls = 'low'; col = '#dc2626'; } else if (d.value > settings.targetHigh) { cls = 'high'; col = '#ea580c'; }
+    let cls = 'ok';
+    if (d.value < settings.targetLow) cls = 'low'; else if (d.value > settings.targetHigh) cls = 'high';
     card.className = `glucose ${cls}`;
     const deltaHtml = d.delta != null ? `<div class="g-delta">${d.delta > 0 ? '+' : ''}${d.delta} (${d.deltaMinutes}m)</div>` : '';
     // No trend-label/"Xm ago" meta line - the arrow and delta chip already say it, and the
     // reading age mostly reflected LibreLinkUp's documented follower lag, not anything useful.
-    disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:${col}">${d.value}<span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div>`;
+    disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:var(${statusColorVar(d.value)})"><span id="gNum">${(_gShown != null ? _gShown : d.value).toFixed(1)}</span><span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div>`;
+    if (_gShown != null && _gShown !== d.value) {
+      tweenNumber(document.getElementById('gNum'), _gShown, d.value, 500);
+      disp.querySelector('.g-val').classList.add('pop');
+    }
+    _gShown = d.value;
     updateCorrSuggestion(); // keep the correction suggestion current as glucose changes, not just on typing
   } catch (e) { card.className = 'glucose'; disp.innerHTML = '<div style="color:var(--dim);font-size:13px">Could not connect</div>'; }
 }
 
-async function loadChart() {
-  try { const data = await api(`/api/glucose-history?hours=${chartHours}`); drawChart(data.glucose || data, data.events || []); } catch (e) {}
+async function loadChart(animate) {
+  try {
+    const data = await api(`/api/glucose-history?hours=${chartHours}`);
+    drawChart(data.glucose || data, data.events || []);
+    if (animate) {
+      // Left-to-right wipe reveal - only on explicit range switches / first load, never on
+      // the 60s background refresh (a chart that flickers every minute reads as broken).
+      const c = document.getElementById('glucoseChart');
+      c.classList.remove('reveal'); void c.offsetWidth; c.classList.add('reveal');
+    }
+  } catch (e) {}
 }
 
 // Live heads-ups (post-workout drop windows, stacked corrections) - shown right under the
@@ -129,8 +235,10 @@ async function loadAlerts() {
 
 async function loadActivities() {
   const wl = document.getElementById('workoutList');
+  if (!wl.dataset.loaded) skeleton(wl, 3, true);
   try {
     const acts = await api('/api/activities');
+    wl.dataset.loaded = '1';
     const today = new Date().toDateString();
     const s = acts.find(a => a.type === 'daily_summary' && new Date(a.time).toDateString() === today);
     document.getElementById('aKcal').textContent = s ? Math.round(s.activeCalories) : '—';
@@ -153,8 +261,10 @@ async function loadActivities() {
 // ─── Insights tab ───────────────────────────────────────────────────────
 async function loadInsights() {
   const el = document.getElementById('insightsList');
+  if (!el.dataset.loaded) skeleton(el, 4, true);
   try {
     const ins = await api('/api/insights');
+    el.dataset.loaded = '1';
     // Grouped by severity so the list reads as sections, not one long undifferentiated
     // scroll - warnings surface first regardless of the order the server derived them in.
     const sections = [['warning', '⚠️ Needs attention'], ['positive', '✅ Going well'], ['info', '💡 Worth knowing']];
@@ -169,10 +279,22 @@ async function loadInsights() {
 
 async function loadInsulinHealth() {
   const el = document.getElementById('insulinHealth');
+  if (!el.dataset.loaded) skeleton(el, 2, true);
   try {
     const h = await api('/api/insulin-health');
+    el.dataset.loaded = '1';
     if (!h.available) { el.innerHTML = `<div class="empty">${h.message}</div>`; return; }
-    let html = `<div class="daily-grid">
+    // Weekly time-in-range meter: tbr/tar are the fixed clinical thresholds, tir the personal
+    // range - normalized so the segments always fill the bar (the 3.9-to-targetLow sliver is
+    // visually negligible). Identity is position + legend label, never color alone.
+    let html = '';
+    if (h.tir != null) {
+      const tot = (h.tbr || 0) + (h.tir || 0) + (h.tar || 0) || 100;
+      const lp = (h.tbr || 0) / tot * 100, ip = (h.tir || 0) / tot * 100, ap = (h.tar || 0) / tot * 100;
+      html += `<div class="tir-bar">${tirSeg('low', lp)}${tirSeg('in', ip)}${tirSeg('high', ap)}</div>
+      <div class="tir-legend"><span><i class="chip" style="background:var(--red)"></i>Below 3.9 <b>${(h.tbr || 0).toFixed(0)}%</b></span><span><i class="chip" style="background:var(--green)"></i>In range <b>${h.tir}%</b></span><span><i class="chip" style="background:var(--orange)"></i>Above 10 <b>${(h.tar || 0).toFixed(0)}%</b></span></div>`;
+    }
+    html += `<div class="daily-grid">
       <div class="daily-stat"><div class="dv">${h.tdd}u</div><div class="dl">Avg daily dose</div></div>
       <div class="daily-stat"><div class="dv">${h.tddPerKg != null ? h.tddPerKg + 'u/kg' : '—'}</div><div class="dl">Dose per kg</div></div>
       <div class="daily-stat"><div class="dv">${h.tir != null ? h.tir + '%' : '—'}</div><div class="dl">Time in range</div></div>
@@ -190,13 +312,24 @@ async function loadInsulinHealth() {
     if (h.notes && h.notes.length) html += h.notes.map(n => `<div class="insight info">${n}</div>`).join('');
     else html += `<div class="insight info">No notable week-over-week changes yet.</div>`;
     el.innerHTML = html;
+    animateTirBars(el);
   } catch (e) { el.innerHTML = '<div class="empty">Could not load.</div>'; }
+}
+
+// TIR meter helpers: segments render at width 0 (data-w holds the real value) and animate
+// to size on the next frame via the CSS width transition. Zero segments are omitted.
+function tirSeg(cls, pct) { return pct > 0.5 ? `<i class="${cls}" data-w="${pct.toFixed(1)}" style="width:0"></i>` : ''; }
+function animateTirBars(scope) {
+  requestAnimationFrame(() => requestAnimationFrame(() =>
+    scope.querySelectorAll('.tir-bar i').forEach(i => { i.style.width = i.dataset.w + '%'; })));
 }
 
 async function loadCorrHistory() {
   const el = document.getElementById('corrHistory');
+  if (!el.dataset.loaded) skeleton(el, 3, true);
   try {
     const d = await api('/api/entries');
+    el.dataset.loaded = '1';
     const corrsAll = d.corrections || [];
     if (!corrsAll.length) { el.innerHTML = '<div class="empty">No corrections yet</div>'; return; }
     const cLimit = expandedLists.corr ? 30 : 5;
@@ -215,9 +348,21 @@ async function loadCorrHistory() {
 // ─── Today tab ──────────────────────────────────────────────────────────
 async function loadDailySummary() {
   const el = document.getElementById('dailySummary');
+  if (!el.dataset.loaded) skeleton(el, 3, true);
   try {
     const s = await api('/api/daily-summary');
-    el.innerHTML = `
+    el.dataset.loaded = '1';
+    // Today's time-in-range meter against the personal target range (low/high counts sum
+    // exactly with readings, unlike the fixed clinical thresholds).
+    let tirBar = '';
+    if (s.glucose.readings > 0) {
+      const lp = s.glucose.low / s.glucose.readings * 100;
+      const hp = s.glucose.high / s.glucose.readings * 100;
+      const ip = Math.max(0, 100 - lp - hp);
+      tirBar = `<div class="tir-bar">${tirSeg('low', lp)}${tirSeg('in', ip)}${tirSeg('high', hp)}</div>
+      <div class="tir-legend"><span><i class="chip" style="background:var(--red)"></i>Below ${settings.targetLow} <b>${lp.toFixed(0)}%</b></span><span><i class="chip" style="background:var(--green)"></i>In range <b>${ip.toFixed(0)}%</b></span><span><i class="chip" style="background:var(--orange)"></i>Above ${settings.targetHigh} <b>${hp.toFixed(0)}%</b></span></div>`;
+    }
+    el.innerHTML = `${tirBar}
     <div class="daily-grid">
       <div class="daily-stat"><div class="dv">${s.glucose.avg || '—'}</div><div class="dl">Avg glucose</div></div>
       <div class="daily-stat"><div class="dv">${s.glucose.tir || '—'}%</div><div class="dl">Time in range</div></div>
@@ -245,6 +390,7 @@ async function loadDailySummary() {
         <div class="daily-stat"><div class="dv">${s.activity ? s.activity.exerciseMins + 'm' : '—'}</div><div class="dl">Exercise</div></div>
       </div>
     </div>`;
+    animateTirBars(el);
   } catch (e) { el.innerHTML = '<div class="empty">Could not load.</div>'; }
 }
 
@@ -380,6 +526,7 @@ async function addBolus() {
   if (!(u > 0) && !(c > 0)) return;
   const r = await api('/api/entries/bolus', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: u > 0 ? u : 0, carbs: c > 0 ? c : null, time: getEntryTime('bolusTimeIn') }) });
   if (r && r.error) { toast(r.error, true); return; }
+  buzz();
   document.getElementById('bolusIn').value = ''; document.getElementById('carbIn').value = '';
   document.getElementById('mealSuggestion').innerHTML = '';
   // Scoped to #qc - clearing every .qc button would also wipe the workout preset row's
@@ -395,6 +542,7 @@ async function addBasal() {
   if (!u || u <= 0) return;
   const r = await api('/api/entries/basal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: u, time: getEntryTime('basalTimeIn') }) });
   if (r && r.error) { toast(r.error, true); return; }
+  buzz();
   document.getElementById('basalIn').value = '';
   document.getElementById('basalForm').classList.remove('vis');
   document.getElementById('basalToggle').textContent = 'Add';
@@ -407,6 +555,7 @@ async function addCorrection() {
   if (!u || u <= 0) return;
   const r = await api('/api/entries/correction', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: u, predictedGlucose: isNaN(t) ? null : t, time: getEntryTime('corrTimeIn') }) });
   if (r && r.error) { toast(r.error, true); return; }
+  buzz();
   document.getElementById('corrUnitsIn').value = ''; document.getElementById('corrTargetIn').value = '';
   document.getElementById('addCorrBtn').disabled = true;
   document.getElementById('corrSuggestion').innerHTML = '';
@@ -429,6 +578,7 @@ async function addWorkout() {
     workoutType: type, duration: isNaN(dur) ? null : dur, calories: isNaN(cal) ? null : cal, time: getEntryTime('workoutTimeIn'),
   }) });
   if (r && r.error) { toast(r.error, true); return; }
+  buzz();
   document.getElementById('workoutTypeIn').value = ''; document.getElementById('workoutDurIn').value = ''; document.getElementById('workoutCalIn').value = '';
   document.getElementById('addWorkoutBtn').disabled = true;
   document.getElementById('workoutAdvice').innerHTML = '';
@@ -601,11 +751,33 @@ function updateBasalStatus() {
 }
 
 // ─── Main render ────────────────────────────────────────────────────────
+// The IOB/COB tiles carry a drain bar (fraction of the contributing doses/carbs still
+// active) plus a "peaks in Xm" / "gone by HH:MM" microtext, so a glance says not just how
+// much is on board but where in its curve it is.
+function renderDecayTile(barId, subId, remaining, doses, peakMin, durMin, noun) {
+  const now = Date.now();
+  const bar = document.getElementById(barId), sub = document.getElementById(subId);
+  if (!doses.length || remaining <= 0.05) { bar.style.width = '0%'; sub.textContent = `no ${noun} active`; return; }
+  const total = doses.reduce((s, x) => s + x.amt, 0);
+  bar.style.width = Math.min(100, remaining / total * 100) + '%';
+  const youngestAge = Math.min(...doses.map(x => now - x.time)) / 60000;
+  if (peakMin && youngestAge < peakMin) sub.textContent = `peaks in ~${Math.round(peakMin - youngestAge)}m`;
+  else sub.textContent = `gone by ${fmtClock(Math.max(...doses.map(x => x.time)) + durMin * 60000)}`;
+}
+
 function render() {
   document.getElementById('iob').innerHTML = calcIOB().toFixed(1) + '<span class="u">u</span>';
   document.getElementById('cob').innerHTML = calcCOB().toFixed(0) + '<span class="u">g</span>';
+  const now = Date.now();
+  renderDecayTile('iobBar', 'iobSub', calcIOB(),
+    [...boluses, ...corrections].filter(x => x.units > 0 && now - x.time < IOB_DIA * 60000).map(x => ({ time: x.time, amt: x.units })),
+    IOB_PEAK, IOB_DIA, 'insulin');
+  renderDecayTile('cobBar', 'cobSub', calcCOB(),
+    boluses.filter(x => x.carbs > 0 && now - x.time < COB_DURATION * 60000).map(x => ({ time: x.time, amt: x.carbs })),
+    null, COB_DURATION, 'carbs');
   const lb = boluses[0];
   document.getElementById('lastCarbs').innerHTML = (lb && lb.carbs != null ? lb.carbs : '—') + '<span class="u">g</span>';
+  document.getElementById('lastCarbsSub').textContent = lb && lb.carbs != null ? timeAgo(lb.time) : '';
   document.getElementById('lastBolus').textContent = lb ? (lb.units > 0 ? lb.units + 'u · ' + timeAgo(lb.time) : 'Carbs only · ' + timeAgo(lb.time)) : 'None';
   const lba = basalDoses[0];
   document.getElementById('lastBasal').textContent = lba ? lba.units + 'u · ' + timeAgo(lba.time) : 'None';
@@ -632,12 +804,30 @@ function render() {
 }
 
 // ─── Glucose chart ──────────────────────────────────────────────────────
-function drawChart(data, events = []) {
+// All colors come from CSS vars (cssVar) so the canvas follows the active theme; the last
+// draw's data + scales are cached on window._chart so scrubbing and theme switches can
+// redraw without refetching. opts.scrubIdx draws the crosshair + enlarged marker for that
+// data point (the scrub overlay handles the HTML tooltip).
+function ensureChartOverlays() {
+  const wrap = document.querySelector('.chart-wrap');
+  if (!wrap || document.getElementById('liveDot')) return;
+  const dot = document.createElement('div'); dot.id = 'liveDot'; dot.className = 'live-dot'; dot.style.display = 'none';
+  const tip = document.createElement('div'); tip.id = 'chartTip'; tip.className = 'chart-tip';
+  wrap.appendChild(dot); wrap.appendChild(tip);
+}
+
+function drawChart(data, events = [], opts = {}) {
   const canvas = document.getElementById('glucoseChart');
-  if (!canvas || !data || data.length < 2) return;
+  ensureChartOverlays();
+  const liveDot = document.getElementById('liveDot');
+  if (!canvas || !data || data.length < 2) { window._chart = null; if (liveDot) liveDot.style.display = 'none'; return; }
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.parentElement.getBoundingClientRect();
+  // Hidden panel (e.g. a theme change while another tab is open) measures 0x0 - drawing
+  // into that wipes the canvas and corrupts the cached scales. Keep the previous state and
+  // let showTab('track') repaint from it when the panel is visible again.
+  if (!rect.width || !rect.height) { if (liveDot) liveDot.style.display = 'none'; return; }
   canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
   canvas.style.width = rect.width + 'px'; canvas.style.height = rect.height + 'px';
   ctx.scale(dpr, dpr);
@@ -649,13 +839,17 @@ function drawChart(data, events = []) {
   const tMin = data[0].time, tMax = data[data.length - 1].time, tRange = tMax - tMin || 1;
   const x = t => (pad.l + ((t - tMin) / tRange) * cW);
   const y = v => (pad.t + cH - (((v - mn) / (mx - mn)) * cH));
+  window._chart = { data, events, x, y, pad, W, H, cW, cH, tMin, tMax, tRange };
+
+  const lineColor = cssVar('--blue');
+  const dotColor = v => cssVar(statusColorVar(v));
 
   // Target-range band
-  ctx.fillStyle = 'rgba(34,197,94,0.08)';
+  ctx.fillStyle = cssVar('--c-band');
   ctx.fillRect(pad.l, y(settings.targetHigh), cW, y(settings.targetLow) - y(settings.targetHigh));
 
   // Grid
-  ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 0.5; ctx.fillStyle = '#94a3b8'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+  ctx.strokeStyle = cssVar('--c-grid'); ctx.lineWidth = 0.5; ctx.fillStyle = cssVar('--c-label'); ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
   for (let v = mn; v <= mx; v += 2) { ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(W - pad.r, y(v)); ctx.stroke(); ctx.fillText(v, pad.l - 4, y(v) + 3); }
 
   // Time labels - anchored to actual clock-hour boundaries within the visible range (not
@@ -691,47 +885,120 @@ function drawChart(data, events = []) {
     });
     ctx.lineTo(x(data[data.length - 1].time), pad.t + cH);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(37,99,235,0.15)';
+    ctx.fillStyle = cssVar('--c-iob');
     ctx.fill();
   }
 
+  // Gradient wash under the glucose line - fades to transparent at the baseline.
+  const grad = ctx.createLinearGradient(0, pad.t, 0, pad.t + cH);
+  grad.addColorStop(0, hexToRgba(lineColor, 0.16));
+  grad.addColorStop(1, hexToRgba(lineColor, 0));
+  ctx.beginPath();
+  data.forEach((d, i) => { i === 0 ? ctx.moveTo(x(d.time), y(d.value)) : ctx.lineTo(x(d.time), y(d.value)); });
+  ctx.lineTo(x(data[data.length - 1].time), pad.t + cH);
+  ctx.lineTo(x(data[0].time), pad.t + cH);
+  ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+
   // Glucose line
-  ctx.beginPath(); ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.strokeStyle = lineColor; ctx.lineWidth = 2; ctx.lineJoin = 'round';
   data.forEach((d, i) => { i === 0 ? ctx.moveTo(x(d.time), y(d.value)) : ctx.lineTo(x(d.time), y(d.value)); });
   ctx.stroke();
 
   // Glucose dots, coloured against the user's own target range
-  data.forEach(d => { let c = '#16a34a'; if (d.value < settings.targetLow) c = '#dc2626'; else if (d.value > settings.targetHigh) c = '#ea580c'; ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x(d.time), y(d.value), 2, 0, Math.PI * 2); ctx.fill(); });
+  data.forEach(d => { ctx.fillStyle = dotColor(d.value); ctx.beginPath(); ctx.arc(x(d.time), y(d.value), 2, 0, Math.PI * 2); ctx.fill(); });
 
   // Event markers
   events.forEach(e => {
     const ex = x(e.time);
     if (ex < pad.l || ex > W - pad.r) return;
     if (e.type === 'bolus') {
-      ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = cssVar('--blue'); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.moveTo(ex, pad.t); ctx.lineTo(ex, H - pad.b); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = '#2563eb'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = cssVar('--blue'); ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center';
       let label = e.units > 0 ? e.units + 'u' : '';
       if (e.carbs) label += (label ? '+' : '') + e.carbs + 'g';
       ctx.fillText(label, ex, pad.t - 2);
     } else if (e.type === 'correction') {
-      ctx.strokeStyle = '#ea580c'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = cssVar('--orange'); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.moveTo(ex, pad.t); ctx.lineTo(ex, H - pad.b); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = '#ea580c'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = cssVar('--orange'); ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center';
       ctx.fillText('⚡' + e.units + 'u', ex, pad.t - 2);
     } else if (e.type === 'exercise') {
       // Duration (minutes) -> pixels using the chart's actual time span, not the nominal
       // range-button value - those don't necessarily match, and the mismatch previously
       // produced a width so small it always hit the 20px floor. Clamped to the plot area so
       // a recent workout's band doesn't paint into the right padding.
-      ctx.fillStyle = 'rgba(22,163,74,0.15)';
+      ctx.fillStyle = hexToRgba(cssVar('--green'), 0.15);
       const ew = Math.min(Math.max(20, (e.duration || 30) * 60000 / tRange * cW), W - pad.r - ex);
       ctx.fillRect(ex, pad.t, ew, cH);
-      ctx.fillStyle = '#16a34a'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'left';
+      ctx.fillStyle = cssVar('--green'); ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'left';
       ctx.fillText('🏋️' + (e.label || ''), ex + 2, H - pad.b - 4);
     }
   });
+
+  if (opts.scrubIdx != null && data[opts.scrubIdx]) {
+    // Crosshair + enlarged marker with a 2px surface ring for the scrubbed point.
+    const d = data[opts.scrubIdx];
+    ctx.strokeStyle = cssVar('--c-label'); ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x(d.time), pad.t); ctx.lineTo(x(d.time), H - pad.b); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x(d.time), y(d.value), 5, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor(d.value); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = cssVar('--card'); ctx.stroke();
+    liveDot.style.display = 'none';
+  } else {
+    // Pulsing "live" marker on the most recent reading.
+    const last = data[data.length - 1];
+    liveDot.style.left = x(last.time) + 'px';
+    liveDot.style.top = y(last.value) + 'px';
+    liveDot.style.background = dotColor(last.value);
+    liveDot.style.display = 'block';
+  }
 }
+
+// Scrub-to-inspect: touch-drag or mouse-hover shows a crosshair, the reading at that moment,
+// and any event (dose/meal/workout) within ~14px. touch-action:pan-y on the canvas keeps
+// vertical page scrolling alive while the chart owns horizontal drags.
+(function wireChartScrub() {
+  const canvas = document.getElementById('glucoseChart');
+  if (!canvas) return;
+  let scrubbing = false;
+  function showScrub(e) {
+    if (!window._chart) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const t = _chart.tMin + ((px - _chart.pad.l) / _chart.cW) * _chart.tRange;
+    let idx = 0, bd = Infinity;
+    _chart.data.forEach((d, i) => { const dd = Math.abs(d.time - t); if (dd < bd) { bd = dd; idx = i; } });
+    drawChart(_chart.data, _chart.events, { scrubIdx: idx });
+    const d = _chart.data[idx];
+    const lx = _chart.x(d.time);
+    let evHtml = '';
+    for (const ev of _chart.events) {
+      if (Math.abs(_chart.x(ev.time) - lx) < 14) {
+        evHtml += `<div class="tip-ev">${ev.type === 'bolus'
+          ? `💉 ${ev.units > 0 ? ev.units + 'u' : ''}${ev.carbs ? (ev.units > 0 ? ' + ' : '') + ev.carbs + 'g' : ''}`
+          : ev.type === 'correction' ? `⚡ ${ev.units}u correction` : `🏋️ ${ev.label || 'workout'}`}</div>`;
+      }
+    }
+    const tip = document.getElementById('chartTip');
+    tip.innerHTML = `${d.value.toFixed(1)} mmol/L · ${fmtClock(d.time)}${evHtml}`;
+    tip.style.display = 'block';
+    tip.style.left = Math.max(56, Math.min(_chart.W - 56, lx)) + 'px';
+    tip.style.top = Math.max(30, _chart.y(d.value)) + 'px';
+  }
+  function endScrub() {
+    scrubbing = false;
+    const tip = document.getElementById('chartTip');
+    if (tip) tip.style.display = 'none';
+    if (window._chart) drawChart(_chart.data, _chart.events);
+  }
+  canvas.addEventListener('pointerdown', e => { scrubbing = true; try { canvas.setPointerCapture(e.pointerId); } catch (err) {} showScrub(e); });
+  canvas.addEventListener('pointermove', e => { if (scrubbing || e.pointerType === 'mouse') showScrub(e); });
+  canvas.addEventListener('pointerup', endScrub);
+  canvas.addEventListener('pointercancel', endScrub);
+  canvas.addEventListener('pointerleave', () => { if (!scrubbing) endScrub(); });
+})();
 
 // ─── Wiring ─────────────────────────────────────────────────────────────
 document.getElementById('pwInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
@@ -742,7 +1009,7 @@ const rangeEl = document.getElementById('chartRange');
   const b = document.createElement('button');
   b.textContent = h + 'h';
   if (h === chartHours) b.classList.add('on');
-  b.onclick = () => { chartHours = h; document.querySelectorAll('.chart-range button').forEach(x => x.classList.remove('on')); b.classList.add('on'); loadChart(); };
+  b.onclick = () => { chartHours = h; document.querySelectorAll('.chart-range button').forEach(x => x.classList.remove('on')); b.classList.add('on'); loadChart(true); };
   rangeEl.appendChild(b);
 });
 
@@ -775,10 +1042,12 @@ document.getElementById('workoutPresetNameIn').addEventListener('keydown', e => 
 async function init() {
   // Settings first so target-range colours are correct on the very first render.
   await fetchSettings();
-  fetchEntries(); fetchGlucose(); loadChart(); loadAlerts(); loadMealPresets(); loadWorkoutPresets();
+  fetchEntries(); fetchGlucose(); loadChart(true); loadAlerts(); loadMealPresets(); loadWorkoutPresets();
+  requestAnimationFrame(moveGlider); // appPage just became visible; tab widths are now real
   setInterval(render, 30000); // ticks IOB/COB/basal countdown between fetches
   // fetchEntries included so server-side changes (a correction resolving on a glucose poll)
   // show up without requiring a manual log action or reload.
   setInterval(() => { fetchGlucose(); loadChart(); fetchEntries(); loadAlerts(); }, 60000);
 }
+applyTheme();
 checkAuth();

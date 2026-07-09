@@ -19,7 +19,8 @@
 </div>
 
 <div id="appPage" style="display:none">
-<div class="tabs">
+<div class="tabs" id="tabBar">
+  <div class="tab-glider" id="tabGlider"></div>
   <button class="tab on" data-tab="track" onclick="showTab('track')">Track</button>
   <button class="tab" data-tab="activity" onclick="showTab('activity')">Activity</button>
   <button class="tab" data-tab="insights" onclick="showTab('insights')">Insights</button>
@@ -45,9 +46,9 @@
 </div>
 
 <div class="grid3">
-  <div class="stat"><div class="stat-label">📉 IOB</div><div class="stat-val blue" id="iob">0.0<span class="u">u</span></div></div>
-  <div class="stat"><div class="stat-label">🍬 COB</div><div class="stat-val" style="color:var(--orange)" id="cob">0<span class="u">g</span></div></div>
-  <div class="stat"><div class="stat-label">🍽️ Last Carbs</div><div class="stat-val" id="lastCarbs">—<span class="u">g</span></div></div>
+  <div class="stat"><div class="stat-label">📉 IOB</div><div class="stat-val blue" id="iob">0.0<span class="u">u</span></div><div class="tile-bar"><i id="iobBar"></i></div><div class="tile-sub" id="iobSub"></div></div>
+  <div class="stat"><div class="stat-label">🍬 COB</div><div class="stat-val" style="color:var(--orange)" id="cob">0<span class="u">g</span></div><div class="tile-bar"><i id="cobBar" class="carb"></i></div><div class="tile-sub" id="cobSub"></div></div>
+  <div class="stat"><div class="stat-label">🍽️ Last Carbs</div><div class="stat-val" id="lastCarbs">—<span class="u">g</span></div><div class="tile-sub" id="lastCarbsSub" style="margin-top:12px"></div></div>
 </div>
 <div class="summary-row">
   <div class="summary-item"><label>Last bolus</label><span id="lastBolus">None</span></div>
@@ -140,6 +141,10 @@
 
 <!-- SETTINGS -->
 <div class="panel" id="panel-settings">
+<div class="card">
+  <div class="card-title">🎨 Appearance</div>
+  <div class="qc" id="themeSeg" style="margin-bottom:0"></div>
+</div>
 <div class="card">
   <div class="card-title">🎯 Target Range</div>
   <div class="input-row">
