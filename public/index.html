@@ -35,6 +35,8 @@
   <div id="gDisplay" style="color:var(--dim);font-size:13px;padding:10px 0">Connecting…</div>
 </div>
 
+<div class="card" id="hypoCard" style="display:none"></div>
+
 <div id="alertsBox"></div>
 
 <div class="card">
@@ -109,6 +111,17 @@
     <div class="ring-item"><div class="val" id="aSteps">—</div><div class="lbl">Steps</div></div>
     <div class="ring-item"><div class="val" id="aRHR">—</div><div class="lbl">Resting HR</div></div>
   </div>
+</div>
+<div class="card">
+  <div class="card-title">🔮 What if I…</div>
+  <div class="qc" id="simPresets"></div>
+  <div class="input-row" style="margin-bottom:8px">
+    <div class="ig"><label>Duration (min)</label><input type="number" inputmode="decimal" id="simDur" placeholder="30"></div>
+    <div class="ig"><label>Intensity</label><select id="simInt"><option value="light">Light</option><option value="moderate" selected>Moderate</option><option value="vigorous">Vigorous</option></select></div>
+  </div>
+  <div style="font-size:11px;color:var(--dim);margin-bottom:10px">Uses your own history for activity types you've logged 2+ times (by exact name); otherwise a broad intensity estimate.</div>
+  <button class="btn btn-blue" onclick="runSimulation()">Simulate</button>
+  <div id="simResult"></div>
 </div>
 <div class="card">
   <div class="card-title">🏋️ Log a workout</div>

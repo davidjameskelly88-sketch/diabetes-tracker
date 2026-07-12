@@ -161,7 +161,7 @@ function showTab(t) {
   // Repaint the chart from cache when Track becomes visible - a theme change while another
   // tab was open skipped its redraw (hidden canvas measures 0x0, see drawChart).
   if (t === 'track') requestAnimationFrame(() => { if (window._chart) drawChart(_chart.data, _chart.events); });
-  if (t === 'activity') loadActivities();
+  if (t === 'activity') { loadActivities(); renderSimPresets(); }
   if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); }
   if (t === 'summary') loadDailySummary();
   if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); renderThemeSeg(); }
@@ -231,6 +231,29 @@ async function loadAlerts() {
     const alerts = await api('/api/alerts');
     document.getElementById('alertsBox').innerHTML = alerts.map(a => `<div class="insight ${a.type}" style="margin-bottom:12px">${a.text}</div>`).join('');
   } catch (e) {}
+}
+
+// Hypo risk forecast: the "what happens next" card, permanently under the glucose display.
+// Always rendered - a quiet "minimal" is what builds enough trust in the tiers that a
+// "high" actually changes behaviour. Factors expand on tap.
+let _riskExpanded = false;
+function toggleRiskFactors() { _riskExpanded = !_riskExpanded; if (window._lastForecast) renderForecast(window._lastForecast); }
+function renderForecast(f) {
+  const card = document.getElementById('hypoCard');
+  if (!f || !f.available) { card.style.display = 'none'; return; }
+  window._lastForecast = f;
+  card.style.display = 'block';
+  card.className = 'card' + (f.risk === 'high' ? ' risk-high' : f.risk === 'moderate' ? ' risk-moderate' : '');
+  const factorsHtml = f.factors.length && _riskExpanded
+    ? `<ul class="risk-factors">${f.factors.map(x => `<li>${x}</li>`).join('')}</ul>`
+    : f.factors.length ? `<div class="risk-factors">${f.factors[0]}${f.factors.length > 1 ? ` <span style="color:var(--blue);font-weight:600">+${f.factors.length - 1} more</span>` : ''}</div>` : '';
+  card.innerHTML = `<div class="risk-row" onclick="toggleRiskFactors()" style="cursor:pointer">
+      <div class="risk-title">Hypo risk · next ${f.horizonHours}h <span style="color:var(--dim);font-weight:400">→ ~${f.projectedLow < 3 ? 'below 3' : f.projectedLow}</span></div>
+      <div class="risk-badge ${f.risk}">${f.risk}</div>
+    </div>${factorsHtml}${f.carbs ? `<div class="risk-carbs">🍬 ${f.carbs}</div>` : ''}`;
+}
+async function loadForecast() {
+  try { renderForecast(await api('/api/hypo-forecast')); } catch (e) {}
 }
 
 async function loadActivities() {
@@ -534,7 +557,7 @@ async function addBolus() {
   document.querySelectorAll('#qc button').forEach(b => b.classList.remove('on'));
   resetBackdate('bolusTimeToggle', 'bolusTimeIn');
   updateBolusBtn();
-  fetchEntries(); loadChart();
+  fetchEntries(); loadChart(); loadForecast(); // fresh insulin/carbs change the 2h forecast
 }
 
 async function addBasal() {
@@ -560,13 +583,13 @@ async function addCorrection() {
   document.getElementById('addCorrBtn').disabled = true;
   document.getElementById('corrSuggestion').innerHTML = '';
   resetBackdate('corrTimeToggle', 'corrTimeIn');
-  fetchEntries(); loadChart();
+  fetchEntries(); loadChart(); loadForecast();
 }
 
 async function delEntry(t, id) {
   if (!confirm('Delete this entry?')) return;
   await api(`/api/entries/${t}/${id}`, { method: 'DELETE' });
-  fetchEntries(); loadChart();
+  fetchEntries(); loadChart(); loadForecast();
 }
 
 async function addWorkout() {
@@ -707,6 +730,58 @@ function updateBolusBtn() {
   const btn = document.getElementById('addBolusBtn');
   btn.disabled = !((u > 0) || (c > 0));
   btn.textContent = (u > 0) ? '＋ Log bolus' : '＋ Log carbs (no insulin)';
+}
+
+// ─── "What if I..." simulator ───────────────────────────────────────────
+// Canned presets span the real spread of activity - golf, a walk and heavy lifting are not
+// the same body. Typing a type name you've logged 2+ times uses YOUR profile instead.
+const SIM_PRESETS = [
+  { label: '15min walk', type: 'Walk', minutes: 15, intensity: 'light' },
+  { label: '30min walk', type: 'Walk', minutes: 30, intensity: 'light' },
+  { label: 'Gym session', type: 'Gym', minutes: 45, intensity: 'moderate' },
+  { label: 'Heavy weights', type: 'Heavy weights', minutes: 45, intensity: 'vigorous' },
+  { label: 'Golf', type: 'Golf', minutes: 120, intensity: 'light' },
+  { label: 'Driving range', type: 'Driving range', minutes: 45, intensity: 'light' },
+  { label: 'Housework/garden', type: 'Housework', minutes: 60, intensity: 'light' },
+  { label: 'Play with kids', type: 'Play', minutes: 30, intensity: 'moderate' },
+];
+let _simSelected = null;
+function renderSimPresets() {
+  const el = document.getElementById('simPresets');
+  if (!el || el.childElementCount) return;
+  SIM_PRESETS.forEach(p => {
+    const b = document.createElement('button');
+    b.textContent = p.label;
+    b.onclick = () => {
+      _simSelected = p;
+      el.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      document.getElementById('simDur').value = p.minutes;
+      document.getElementById('simInt').value = p.intensity;
+      runSimulation();
+    };
+    el.appendChild(b);
+  });
+}
+async function runSimulation() {
+  const el = document.getElementById('simResult');
+  const minutes = parseFloat(document.getElementById('simDur').value) || (_simSelected ? _simSelected.minutes : 30);
+  const intensity = document.getElementById('simInt').value;
+  const type = _simSelected ? _simSelected.type : '';
+  skeleton(el, 2, true);
+  try {
+    const s = await api(`/api/simulate?type=${encodeURIComponent(type)}&minutes=${minutes}&intensity=${intensity}`);
+    if (!s.available) { el.innerHTML = `<div class="suggest-box">${s.message}</div>`; return; }
+    if (s.rises) { el.innerHTML = `<div class="suggest-box">${s.advice}<br><span style="opacity:.75">Based on ${s.basis}.</span></div>`; return; }
+    const rangeTxt = s.range[0] < 3 ? `below 3–${s.range[1]}` : `${s.range[0]}–${s.range[1]}`;
+    const riskStyle = s.delayedRisk === 'high' ? 'background:var(--red-l);color:var(--red)' : s.delayedRisk === 'moderate' ? 'background:var(--orange-l);color:#c2410c' : '';
+    el.innerHTML = `<div class="suggest-box" style="${riskStyle}">
+      <b>Likely range after:</b> ${rangeTxt} mmol/L (from ${s.current}${s.iob > 0.1 ? `, ${s.iob}u on board` : ''})<br>
+      <b>Delayed low risk:</b> ${s.delayedRisk} · <b>watch period:</b> ${s.watchPeriod}
+      ${s.carbs ? `<br>🍬 ${s.carbs}` : ''}
+      <br><span style="opacity:.75">Based on ${s.basis}.${s.calibrated ? '' : ' Estimates are rough until a few corrections calibrate your ratios.'}${s.stale ? ' ⚠️ Reading may be stale — check your Libre app.' : ''}</span>
+    </div>`;
+  } catch (e) { el.innerHTML = ''; }
 }
 
 // Pre-workout advisor: as soon as a workout type is picked/typed, project what that workout
@@ -1042,12 +1117,12 @@ document.getElementById('workoutPresetNameIn').addEventListener('keydown', e => 
 async function init() {
   // Settings first so target-range colours are correct on the very first render.
   await fetchSettings();
-  fetchEntries(); fetchGlucose(); loadChart(true); loadAlerts(); loadMealPresets(); loadWorkoutPresets();
+  fetchEntries(); fetchGlucose(); loadChart(true); loadAlerts(); loadForecast(); loadMealPresets(); loadWorkoutPresets();
   requestAnimationFrame(moveGlider); // appPage just became visible; tab widths are now real
   setInterval(render, 30000); // ticks IOB/COB/basal countdown between fetches
   // fetchEntries included so server-side changes (a correction resolving on a glucose poll)
   // show up without requiring a manual log action or reload.
-  setInterval(() => { fetchGlucose(); loadChart(); fetchEntries(); loadAlerts(); }, 60000);
+  setInterval(() => { fetchGlucose(); loadChart(); fetchEntries(); loadAlerts(); loadForecast(); }, 60000);
 }
 applyTheme();
 checkAuth();

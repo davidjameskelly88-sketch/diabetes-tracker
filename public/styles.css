@@ -156,6 +156,21 @@ html.dark .suggest-box{color:#c4b5fd}
 .tir-legend{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:12px}
 .tir-legend b{color:var(--ink-2);font-weight:600}
 .tir-legend .chip{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:4px;vertical-align:baseline}
+/* Hypo risk forecast card: tier badge + driver factors. Badge colors are the status trio
+   plus blue for "low"; "minimal" stays quiet on purpose - reassurance shouldn't shout. */
+.risk-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.risk-title{font-size:13px;font-weight:600;color:var(--ink-2)}
+.risk-badge{font-size:12px;font-weight:700;padding:4px 12px;border-radius:16px;text-transform:uppercase;letter-spacing:.5px}
+.risk-badge.high{background:var(--red);color:#fff}
+.risk-badge.moderate{background:var(--orange);color:#fff}
+.risk-badge.low{background:var(--blue-l);color:var(--blue)}
+.risk-badge.minimal{background:var(--green-l);color:var(--green)}
+#hypoCard.risk-high{border-color:var(--red)}
+#hypoCard.risk-moderate{border-color:var(--orange)}
+.risk-factors{margin-top:8px;font-size:12px;color:var(--ink-2);line-height:1.55}
+.risk-factors li{margin-left:16px;margin-bottom:2px}
+.risk-carbs{margin-top:8px;font-size:12px;padding:8px 10px;border-radius:8px;background:var(--orange-l);color:#c2410c}
+html.dark .risk-carbs{color:#fb923c}
 /* Skeleton shimmer for first-load placeholders. */
 .skel{position:relative;overflow:hidden;background:var(--border);border-radius:8px;height:14px;margin-bottom:10px}
 .skel.tall{height:52px;border-radius:10px}
