@@ -44,6 +44,42 @@ function hexToRgba(hex, a) {
 function statusColorVar(v) { return v < settings.targetLow ? '--red' : v > settings.targetHigh ? '--orange' : '--green'; }
 function buzz(pattern) { if (navigator.vibrate) navigator.vibrate(pattern || 10); }
 
+// ─── One-thumb helpers ──────────────────────────────────────────────────
+// ± steppers on dose/carb inputs: adjust without the keyboard. The dispatched input event
+// runs the same listeners typing would (suggestions, button states); _stepping tells the
+// carbIn listener not to treat a step as "manual typing" (which would untag the preset meal
+// - nudging the portion of a preset meal is still that meal).
+let _stepping = false;
+function stepInput(id, delta) {
+  const el = document.getElementById(id);
+  const cur = parseFloat(el.value);
+  const next = Math.max(0, Math.round(((isNaN(cur) ? 0 : cur) + delta) * 10) / 10);
+  el.value = next === 0 ? '' : next;
+  _stepping = true;
+  el.dispatchEvent(new Event('input'));
+  _stepping = false;
+}
+// Quick-log bar: scroll to the card and focus its first input once the scroll settles.
+function jumpTo(cardId, inputId, isBasal) {
+  if (isBasal) {
+    const f = document.getElementById('basalForm');
+    if (!f.classList.contains('vis')) { f.classList.add('vis'); document.getElementById('basalToggle').textContent = 'Cancel'; }
+  }
+  document.getElementById(cardId).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setTimeout(() => { try { document.getElementById(inputId).focus({ preventScroll: true }); } catch (e) {} }, 400);
+}
+// Manual refresh - essential once installed to the home screen, where there's no browser
+// reload button and "is this current?" needs a one-tap answer.
+async function refreshAll() {
+  const btn = document.getElementById('gRefresh');
+  btn.classList.add('spin');
+  try {
+    await Promise.all([fetchGlucose(), loadChart(), fetchEntries(), loadAlerts(), loadForecast()]);
+    toast('Updated');
+  } catch (e) { toast('Could not refresh', true); }
+  finally { btn.classList.remove('spin'); }
+}
+
 // ─── Insulin / carb models ──────────────────────────────────────────────
 // Exponential insulin-action model (Loop/OpenAPS style) for Novorapid: peak activity at
 // IOB_PEAK minutes, fully absorbed by IOB_DIA minutes. Replaces a naive linear decay, which
@@ -157,6 +193,7 @@ function showTab(t) {
   const panel = document.getElementById('panel-' + t);
   panel.classList.add('vis');
   panel.classList.remove('enter'); void panel.offsetWidth; panel.classList.add('enter');
+  window.scrollTo(0, 0); // fresh tab starts at its top, not wherever the last tab was scrolled
   moveGlider();
   // Repaint the chart from cache when Track becomes visible - a theme change while another
   // tab was open skipped its redraw (hidden canvas measures 0x0, see drawChart).
@@ -202,7 +239,11 @@ async function fetchGlucose() {
     const deltaHtml = d.delta != null ? `<div class="g-delta">${d.delta > 0 ? '+' : ''}${d.delta} (${d.deltaMinutes}m)</div>` : '';
     // No trend-label/"Xm ago" meta line - the arrow and delta chip already say it, and the
     // reading age mostly reflected LibreLinkUp's documented follower lag, not anything useful.
-    disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:var(${statusColorVar(d.value)})"><span id="gNum">${(_gShown != null ? _gShown : d.value).toFixed(1)}</span><span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div>`;
+    // The ONE exception: a genuinely old reading (>30min, beyond normal follower lag) shows
+    // an age warning - trusting a big number that's an hour stale is worse than noise.
+    const ageMin = Math.max(0, Math.round((Date.now() - (new Date(d.timestamp).getTime() || d.fetchedAt)) / 60000));
+    const staleHtml = ageMin > 30 ? `<div class="g-stale">⚠️ Reading is ~${ageMin}min old</div>` : '';
+    disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:var(${statusColorVar(d.value)})"><span id="gNum">${(_gShown != null ? _gShown : d.value).toFixed(1)}</span><span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div>${staleHtml}`;
     if (_gShown != null && _gShown !== d.value) {
       tweenNumber(document.getElementById('gNum'), _gShown, d.value, 500);
       disp.querySelector('.g-val').classList.add('pop');
@@ -297,7 +338,12 @@ function renderForecast(f) {
     </div>${factorsHtml}${f.carbs ? `<div class="risk-carbs">🍬 ${f.carbs}</div>` : ''}`;
 }
 async function loadForecast() {
-  try { renderForecast(await api('/api/hypo-forecast')); renderSimple(); } catch (e) {}
+  try {
+    renderForecast(await api('/api/hypo-forecast'));
+    renderSimple();
+    // The chart draws the projection from _lastForecast - repaint so it tracks the new one.
+    if (window._chart) drawChart(_chart.data, _chart.events);
+  } catch (e) {}
 }
 
 async function loadActivities() {
@@ -319,7 +365,7 @@ async function loadActivities() {
     wl.innerHTML = wkAll.slice(0, wLimit).map(w => {
       const hr = w.avgHeartRate ? ` · ❤️ ${w.avgHeartRate}bpm${w.maxHeartRate ? ' (max ' + w.maxHeartRate + ')' : ''}` : '';
       const manual = w.manual ? ' <span class="sub">· manual</span>' : '';
-      const del = w.manual ? `<button class="log-del" onclick="delWorkout('${w.id}')">✕</button>` : '';
+      const del = w.manual ? `<button class="log-del" aria-label="Delete workout" onclick="delWorkout('${w.id}')">✕</button>` : '';
       return `<div class="workout"><div class="w-icon">🏋️</div><div class="w-info"><div class="w-name">${w.workoutType || 'Exercise'}${manual}</div><div class="w-detail">${w.duration ? Math.round(w.duration) + 'min ' : ''} ${w.calories ? '· ' + Math.round(w.calories) + ' kcal ' : ''}${hr}<br>${fmtTime(new Date(w.startTime).getTime())}</div></div>${del}</div>`;
     }).join('') + showMoreBtn(wkAll.length, wLimit, expandedLists.workouts, 5, 'toggleWorkouts');
   } catch (e) { wl.innerHTML = '<div class="empty">Could not load workouts.</div>'; }
@@ -523,7 +569,7 @@ async function loadPresetManager() {
   try {
     const presets = await api('/api/meal-presets');
     if (!presets.length) { el.innerHTML = '<div class="empty">No presets yet</div>'; return; }
-    el.innerHTML = presets.map(p => `<div class="log-entry"><div class="log-left"><div><div class="log-primary">${p.name}</div><div class="log-secondary">${p.carbs}g</div></div></div><button class="log-del" onclick="delPreset('${p.id}')">✕</button></div>`).join('');
+    el.innerHTML = presets.map(p => `<div class="log-entry"><div class="log-left"><div><div class="log-primary">${p.name}</div><div class="log-secondary">${p.carbs}g</div></div></div><button class="log-del" aria-label="Remove preset" onclick="delPreset('${p.id}')">✕</button></div>`).join('');
   } catch (e) { el.innerHTML = ''; }
 }
 async function addPreset() {
@@ -546,7 +592,7 @@ async function loadWorkoutPresetManager() {
   try {
     const presets = await api('/api/workout-presets');
     if (!presets.length) { el.innerHTML = '<div class="empty">No presets yet</div>'; return; }
-    el.innerHTML = presets.map(p => `<div class="log-entry"><div class="log-left"><div class="log-primary">${p.name}</div></div><button class="log-del" onclick="delWorkoutPreset('${p.id}')">✕</button></div>`).join('');
+    el.innerHTML = presets.map(p => `<div class="log-entry"><div class="log-left"><div class="log-primary">${p.name}</div></div><button class="log-del" aria-label="Remove preset" onclick="delWorkoutPreset('${p.id}')">✕</button></div>`).join('');
   } catch (e) { el.innerHTML = ''; }
 }
 async function addWorkoutPreset() {
@@ -812,6 +858,7 @@ async function updateCorrSuggestion() {
   } catch (e) { el.innerHTML = ''; }
 }
 function useCorrSuggestion(u) { const el = document.getElementById('corrUnitsIn'); el.value = u; el.dispatchEvent(new Event('input')); }
+function useMealSuggestion(u) { const el = document.getElementById('bolusIn'); el.value = u; el.dispatchEvent(new Event('input')); }
 
 async function updateMealSuggestion() {
   const c = parseFloat(document.getElementById('carbIn').value);
@@ -819,7 +866,13 @@ async function updateMealSuggestion() {
   if (!c || c <= 0) { el.innerHTML = ''; return; }
   try {
     const r = await api('/api/meal-suggestion?carbs=' + c + (_selectedMeal ? '&meal=' + encodeURIComponent(_selectedMeal) : ''));
-    if (r.suggestion != null) { el.innerHTML = `<div class="suggest-box">Suggested dose: ~${r.suggestion}u for ${c}g (based on ${r.basedOn} similar past meals)${r.note ? '<br>' + r.note : ''}</div>`; }
+    if (r.suggestion != null) {
+      // One-tap "Use" mirrors the correction card - the app shouldn't tell you a number and
+      // then make you type it.
+      const useBtn = (r.suggestion > 0 && !document.getElementById('bolusIn').value)
+        ? ` <button type="button" onclick="useMealSuggestion(${r.suggestion})" style="width:auto;padding:3px 10px;margin-left:4px;border-radius:6px;border:none;background:var(--blue);color:#fff;font-size:11px;font-weight:600;cursor:pointer">Use</button>` : '';
+      el.innerHTML = `<div class="suggest-box">Suggested dose: ~${r.suggestion}u for ${c}g (based on ${r.basedOn} similar past meals)${useBtn}${r.note ? '<br>' + r.note : ''}</div>`;
+    }
     else { el.innerHTML = `<div class="suggest-box">${r.message || 'Log a few more meals to get personalised suggestions.'}</div>`; }
   } catch (e) { el.innerHTML = ''; }
 }
@@ -971,7 +1024,7 @@ function render() {
     if (e.kind === 'bolus') { label = e.units > 0 ? `Novorapid · ${e.units}u` : '🍬 Carbs only'; if (e.carbs != null) label += ` <span class="sub">· ${e.carbs}g</span>`; }
     else if (e.kind === 'basal') { label = `Lantus · ${e.units}u`; }
     else { label = `⚡ Correction · ${e.units}u`; detail = e.resolved ? ` <span class="sub">→ ${e.actualGlucose}</span>` : (e.startGlucose ? ` <span class="sub">from ${e.startGlucose}</span>` : ''); }
-    html += `<div class="log-entry"><div class="log-left"><div class="log-dot ${e.kind}"></div><div><div class="log-primary">${label}${detail}</div><div class="log-secondary">${fmtClock(e.time)}</div></div></div><div class="log-actions"><button class="log-edit" onclick="startEdit('${e.kind}','${e.id}')">✎</button><button class="log-del" onclick="delEntry('${e.kind}','${e.id}')">✕</button></div></div>`;
+    html += `<div class="log-entry"><div class="log-left"><div class="log-dot ${e.kind}"></div><div><div class="log-primary">${label}${detail}</div><div class="log-secondary">${fmtClock(e.time)}</div></div></div><div class="log-actions"><button class="log-edit" aria-label="Edit entry" onclick="startEdit('${e.kind}','${e.id}')">✎</button><button class="log-del" aria-label="Delete entry" onclick="delEntry('${e.kind}','${e.id}')">✕</button></div></div>`;
   });
   html += showMoreBtn(all.length, limit, expandedLists.log, 10, 'toggleLog');
   log.innerHTML = html;
@@ -1007,10 +1060,17 @@ function drawChart(data, events = [], opts = {}) {
   ctx.scale(dpr, dpr);
   const W = rect.width, H = rect.height, pad = { t: 14, b: 20, l: 35, r: 10 };
   const cW = W - pad.l - pad.r, cH = H - pad.t - pad.b;
+  // Forecast projection: when the reading is fresh enough, the x-domain extends 2h past the
+  // last point so the hypo forecast draws ON the chart, not just as text. Constant across
+  // scrub redraws so the crosshair geometry never shifts mid-drag.
+  const fc = window._lastForecast;
+  const lastPt = data[data.length - 1];
+  const showFc = !!(fc && fc.available && (Date.now() - lastPt.time) < 45 * 60000);
+  const fcTime = showFc ? lastPt.time + fc.horizonHours * 3600000 : null;
   const vals = data.map(d => d.value);
-  let mn = Math.min(...vals, 3.5), mx = Math.max(...vals, 12);
+  let mn = Math.min(...vals, 3.5, showFc ? fc.projectedLow : 3.5), mx = Math.max(...vals, 12);
   mn = Math.floor(mn); mx = Math.ceil(mx);
-  const tMin = data[0].time, tMax = data[data.length - 1].time, tRange = tMax - tMin || 1;
+  const tMin = data[0].time, tMax = showFc ? fcTime : data[data.length - 1].time, tRange = tMax - tMin || 1;
   const x = t => (pad.l + ((t - tMin) / tRange) * cW);
   const y = v => (pad.t + cH - (((v - mn) / (mx - mn)) * cH));
   window._chart = { data, events, x, y, pad, W, H, cW, cH, tMin, tMax, tRange };
@@ -1081,6 +1141,19 @@ function drawChart(data, events = [], opts = {}) {
 
   // Glucose dots, coloured against the user's own target range
   data.forEach(d => { ctx.fillStyle = dotColor(d.value); ctx.beginPath(); ctx.arc(x(d.time), y(d.value), 2, 0, Math.PI * 2); ctx.fill(); });
+
+  // Forecast projection: dotted risk-colored line from the last reading to the 2h forecast
+  // point, hollow end marker + value label - the risk card's number, made visible in place.
+  if (showFc) {
+    const riskColor = cssVar(fc.risk === 'high' ? '--red' : fc.risk === 'moderate' ? '--orange' : fc.risk === 'low' ? '--blue' : '--green');
+    ctx.strokeStyle = riskColor; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(x(lastPt.time), y(lastPt.value)); ctx.lineTo(x(fcTime), y(fc.projectedLow)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x(fcTime), y(fc.projectedLow), 4, 0, Math.PI * 2);
+    ctx.fillStyle = cssVar('--card'); ctx.fill();
+    ctx.strokeStyle = riskColor; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = riskColor; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText('~' + fc.projectedLow, x(fcTime) - 3, Math.max(pad.t + 10, y(fc.projectedLow) - 8));
+  }
 
   // Event markers
   events.forEach(e => {
@@ -1196,8 +1269,9 @@ document.getElementById('bolusIn').addEventListener('input', updateBolusBtn);
 document.getElementById('bolusIn').addEventListener('keydown', e => { if (e.key === 'Enter') addBolus(); });
 document.getElementById('carbIn').addEventListener('input', function () {
   // Manual typing means this is no longer "the preset meal" - drop the tag so meal memory
-  // only aggregates logs that genuinely came from the named preset.
-  if (_selectedMeal) { _selectedMeal = null; document.querySelectorAll('#qc button').forEach(b => b.classList.remove('on')); document.getElementById('mealMemory').innerHTML = ''; }
+  // only aggregates logs that genuinely came from the named preset. Stepper nudges are
+  // exempt (_stepping): adjusting the portion of a preset meal is still that meal.
+  if (_selectedMeal && !_stepping) { _selectedMeal = null; document.querySelectorAll('#qc button').forEach(b => b.classList.remove('on')); document.getElementById('mealMemory').innerHTML = ''; }
   updateBolusBtn(); debouncedMealSuggestion();
 });
 document.getElementById('carbIn').addEventListener('keydown', e => { if (e.key === 'Enter') addBolus(); });

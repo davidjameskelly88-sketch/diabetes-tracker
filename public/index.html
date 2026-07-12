@@ -2,12 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Glucose">
 <meta name="theme-color" content="#f1f5f9">
 <title>Diabetes Tracker</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💉</text></svg>">
+<!-- Installable as a home-screen app (manifest for Android/Chrome, apple-touch-icon +
+     capable meta for iOS). Deliberately NO service worker: an offline cache of a
+     glucose app is a stale-data trap - if there's no connection, showing nothing beats
+     showing yesterday's numbers as if they were live. -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png" type="image/png">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -30,7 +37,13 @@
 
 <!-- TRACK -->
 <div class="panel vis" id="panel-track">
+<div class="quick-log" id="quickLog">
+  <button onclick="jumpTo('mealCard','carbIn')">🍽️ Meal</button>
+  <button onclick="jumpTo('corrCard','corrUnitsIn')">⚡ Correction</button>
+  <button onclick="jumpTo('basalCard','basalIn',true)">💉 Basal</button>
+</div>
 <div class="glucose" id="gCard">
+  <button class="g-refresh" id="gRefresh" onclick="refreshAll()" aria-label="Refresh data" title="Refresh">↻</button>
   <div style="font-size:11px;font-weight:500;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Current Glucose</div>
   <div id="gDisplay" style="color:var(--dim);font-size:13px;padding:10px 0">Connecting…</div>
 </div>
@@ -57,12 +70,12 @@
   <div class="summary-item" style="text-align:right"><label>Last basal</label><span id="lastBasal">None</span></div>
 </div>
 
-<div class="card">
+<div class="card" id="mealCard">
   <div class="card-title">Log a meal (Novorapid)</div>
   <div class="qc" id="qc"></div>
   <div class="input-row">
-    <div class="ig"><label>Carbs (g)</label><input type="number" inputmode="decimal" id="carbIn" placeholder="e.g. 45"></div>
-    <div class="ig"><label>Novorapid (u)</label><input type="number" inputmode="decimal" id="bolusIn" placeholder="optional"></div>
+    <div class="ig"><label>Carbs (g)</label><div class="stepper"><button type="button" class="step-btn" onclick="stepInput('carbIn',-5)" aria-label="5 grams less">−</button><input type="number" inputmode="decimal" id="carbIn" placeholder="e.g. 45"><button type="button" class="step-btn" onclick="stepInput('carbIn',5)" aria-label="5 grams more">＋</button></div></div>
+    <div class="ig"><label>Novorapid (u)</label><div class="stepper"><button type="button" class="step-btn" onclick="stepInput('bolusIn',-0.5)" aria-label="Half unit less">−</button><input type="number" inputmode="decimal" id="bolusIn" placeholder="opt."><button type="button" class="step-btn" onclick="stepInput('bolusIn',0.5)" aria-label="Half unit more">＋</button></div></div>
   </div>
   <div id="mealMemory"></div>
   <div id="mealSuggestion"></div>
@@ -71,10 +84,10 @@
   <button class="btn btn-blue" id="addBolusBtn" disabled onclick="addBolus()">＋ Log bolus</button>
 </div>
 
-<div class="card">
+<div class="card" id="corrCard">
   <div class="card-title">⚡ Correction dose</div>
   <div class="input-row">
-    <div class="ig"><label>Novorapid (u)</label><input type="number" inputmode="decimal" id="corrUnitsIn" placeholder="e.g. 2"></div>
+    <div class="ig"><label>Novorapid (u)</label><div class="stepper"><button type="button" class="step-btn" onclick="stepInput('corrUnitsIn',-0.5)" aria-label="Half unit less">−</button><input type="number" inputmode="decimal" id="corrUnitsIn" placeholder="e.g. 2"><button type="button" class="step-btn" onclick="stepInput('corrUnitsIn',0.5)" aria-label="Half unit more">＋</button></div></div>
     <div class="ig"><label>Target glucose (mmol/L)</label><input type="number" inputmode="decimal" id="corrTargetIn" placeholder="e.g. 6.5"></div>
   </div>
   <div id="corrSuggestion"></div>
@@ -91,7 +104,7 @@
   <div class="basal-status" id="basalStatus"></div>
   <div class="basal-form" id="basalForm">
     <div class="basal-row">
-      <input type="number" inputmode="decimal" id="basalIn" placeholder="Units">
+      <div class="stepper" style="flex:1"><button type="button" class="step-btn" onclick="stepInput('basalIn',-1)" aria-label="One unit less">−</button><input type="number" inputmode="decimal" id="basalIn" placeholder="Units"><button type="button" class="step-btn" onclick="stepInput('basalIn',1)" aria-label="One unit more">＋</button></div>
       <button onclick="addBasal()">Save</button>
     </div>
     <button class="backdate-toggle" id="basalTimeToggle" type="button">🕐 Backdate</button>
