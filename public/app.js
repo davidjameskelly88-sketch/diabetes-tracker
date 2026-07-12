@@ -162,7 +162,7 @@ function showTab(t) {
   // tab was open skipped its redraw (hidden canvas measures 0x0, see drawChart).
   if (t === 'track') requestAnimationFrame(() => { if (window._chart) drawChart(_chart.data, _chart.events); });
   if (t === 'activity') { loadActivities(); renderSimPresets(); }
-  if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); }
+  if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); loadSensitivityMap(); }
   if (t === 'summary') loadDailySummary();
   if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); renderThemeSeg(); }
 }
@@ -190,6 +190,7 @@ function showTab(t) {
 async function fetchEntries() { const d = await api('/api/entries'); boluses = d.boluses || []; basalDoses = d.basalDoses || []; corrections = d.corrections || []; render(); }
 
 let _gShown = null; // last value displayed, so a fresh reading tweens instead of snapping
+let _lastGlucose = null, _lastAlerts = [];
 async function fetchGlucose() {
   const card = document.getElementById('gCard'), disp = document.getElementById('gDisplay');
   try {
@@ -207,6 +208,8 @@ async function fetchGlucose() {
       disp.querySelector('.g-val').classList.add('pop');
     }
     _gShown = d.value;
+    _lastGlucose = d;
+    renderSimple();
     updateCorrSuggestion(); // keep the correction suggestion current as glucose changes, not just on typing
   } catch (e) { card.className = 'glucose'; disp.innerHTML = '<div style="color:var(--dim);font-size:13px">Could not connect</div>'; }
 }
@@ -229,8 +232,49 @@ async function loadChart(animate) {
 async function loadAlerts() {
   try {
     const alerts = await api('/api/alerts');
+    _lastAlerts = alerts;
     document.getElementById('alertsBox').innerHTML = alerts.map(a => `<div class="insight ${a.type}" style="margin-bottom:12px">${a.text}</div>`).join('');
+    renderSimple();
   } catch (e) {}
+}
+
+// ─── Simple ("tired") mode ──────────────────────────────────────────────
+// Three things in huge type - Now / Risk / Action - for the moments when the full dashboard
+// is cognitive overload: tired, at work, wrangling kids. The action line is synthesized from
+// what the app already knows, in priority order: live alert > forecast-driven carb/recheck
+// advice > overdue basal > "no action needed". Persists across loads.
+function simpleAction() {
+  if (_lastAlerts && _lastAlerts.length) return _lastAlerts[0].text;
+  const f = window._lastForecast;
+  if (f && f.available) {
+    if (f.risk === 'high') return (f.carbs ? '🍬 ' + f.carbs + ' ' : 'Have fast carbs nearby. ') + 'Re-check in 15min. Avoid starting exercise.';
+    if (f.risk === 'moderate') return (f.carbs ? '🍬 ' + f.carbs + ' ' : '') + 'Re-check in 15–20min.';
+  }
+  const lba = basalDoses[0];
+  if (lba && (Date.now() - lba.time) / 3600000 > 24) return 'Lantus is overdue — take your basal.';
+  return 'No action needed.';
+}
+function renderSimple() {
+  const view = document.getElementById('simpleView');
+  if (!view || view.style.display === 'none') return;
+  const d = _lastGlucose;
+  document.getElementById('simpleNow').textContent = d ? d.value.toFixed(1) : '—';
+  document.getElementById('simpleNow').style.color = d ? `var(${statusColorVar(d.value)})` : '';
+  document.getElementById('simpleTrend').textContent = d ? `${d.trend || ''} ${d.trendLabel || ''}`.trim() : 'No reading';
+  const f = window._lastForecast;
+  const riskEl = document.getElementById('simpleRisk');
+  riskEl.textContent = f && f.available ? f.risk.charAt(0).toUpperCase() + f.risk.slice(1) : '—';
+  riskEl.className = 'simple-risk ' + (f && f.available ? f.risk : '');
+  document.getElementById('simpleAction').textContent = simpleAction();
+}
+function enterSimple() {
+  try { localStorage.setItem('simpleMode', '1'); } catch (e) {}
+  document.getElementById('simpleView').style.display = 'block';
+  renderSimple();
+}
+function exitSimple() {
+  try { localStorage.removeItem('simpleMode'); } catch (e) {}
+  document.getElementById('simpleView').style.display = 'none';
 }
 
 // Hypo risk forecast: the "what happens next" card, permanently under the glucose display.
@@ -253,7 +297,7 @@ function renderForecast(f) {
     </div>${factorsHtml}${f.carbs ? `<div class="risk-carbs">🍬 ${f.carbs}</div>` : ''}`;
 }
 async function loadForecast() {
-  try { renderForecast(await api('/api/hypo-forecast')); } catch (e) {}
+  try { renderForecast(await api('/api/hypo-forecast')); renderSimple(); } catch (e) {}
 }
 
 async function loadActivities() {
@@ -345,6 +389,32 @@ function tirSeg(cls, pct) { return pct > 0.5 ? `<i class="${cls}" data-w="${pct.
 function animateTirBars(scope) {
   requestAnimationFrame(() => requestAnimationFrame(() =>
     scope.querySelectorAll('.tir-bar i').forEach(i => { i.style.width = i.dataset.w + '%'; })));
+}
+
+// Sensitivity map: correction strength by time-of-day bucket (+ post-exercise vs rest),
+// bars scaled to the strongest bucket, counts always visible.
+async function loadSensitivityMap() {
+  const el = document.getElementById('sensMap');
+  if (!el.dataset.loaded) skeleton(el, 3);
+  try {
+    const s = await api('/api/sensitivity-map');
+    el.dataset.loaded = '1';
+    if (!s.available) { el.innerHTML = `<div class="empty">${s.message}</div>`; return; }
+    const withData = s.buckets.filter(b => b.factor != null);
+    const maxF = Math.max(...withData.map(b => b.factor), 0.1);
+    let html = s.buckets.map(b => `<div class="sens-row">
+      <div class="sens-name">${b.label}<span class="sub">${b.range}</span></div>
+      <div class="sens-track"><i data-w="${b.factor != null ? (b.factor / maxF * 100).toFixed(0) : 0}" style="width:0"></i></div>
+      <div class="sens-val">${b.factor != null ? b.factor + '/u' : '—'} <span class="n">n=${b.count}</span></div>
+    </div>`).join('');
+    if (s.postExercise.factor != null && s.rest.factor != null && s.postExercise.count >= 2) {
+      const pct = Math.round((s.postExercise.factor / s.rest.factor - 1) * 100);
+      html += `<div class="sens-note">Post-exercise (within 6h of a workout): <b>${s.postExercise.factor}/u</b> (n=${s.postExercise.count}) vs <b>${s.rest.factor}/u</b> at rest — ${pct >= 0 ? pct + '% stronger' : Math.abs(pct) + '% weaker'} when you've trained.</div>`;
+    }
+    html += `<div class="sens-note">mmol/L drop per unit, from ${s.total} clean resolved corrections. Low-n rows firm up as you log more. Slices the app can't see (sleep, alcohol, stress, meal fat) aren't shown rather than guessed.</div>`;
+    el.innerHTML = html;
+    requestAnimationFrame(() => requestAnimationFrame(() => el.querySelectorAll('.sens-track i').forEach(i => { i.style.width = i.dataset.w + '%'; })));
+  } catch (e) { el.innerHTML = '<div class="empty">Could not load.</div>'; }
 }
 
 async function loadCorrHistory() {
@@ -505,9 +575,31 @@ async function loadMealPresets() {
   mealPresets.forEach(p => {
     const b = document.createElement('button');
     b.textContent = `${p.name} (${p.carbs}g)`;
-    b.onclick = () => { document.getElementById('carbIn').value = p.carbs; qcEl.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); updateBolusBtn(); updateMealSuggestion(); };
+    b.onclick = () => {
+      document.getElementById('carbIn').value = p.carbs;
+      qcEl.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      _selectedMeal = p.name; // tags the log for meal memory + boosts same-meal suggestion weighting
+      updateBolusBtn(); updateMealSuggestion(); loadMealMemory(p.name);
+    };
     qcEl.appendChild(b);
   });
+}
+
+// Meal memory: what this exact meal has done before - peak, timing, return to range, low
+// risk after, and whether it behaves like a delayed-rise (high fat/protein) meal. Renders
+// when a preset is tapped; "the usual lunch" instead of "28g".
+let _selectedMeal = null;
+async function loadMealMemory(name) {
+  const el = document.getElementById('mealMemory');
+  try {
+    const m = await api('/api/meal-memory?name=' + encodeURIComponent(name));
+    if (!m.available) { el.innerHTML = `<div class="suggest-box" style="opacity:.85">📒 ${m.message}</div>`; return; }
+    const lowStyle = m.lowRiskAfter === 'high' ? 'color:var(--red);font-weight:700' : m.lowRiskAfter === 'moderate' ? 'color:#c2410c;font-weight:700' : '';
+    el.innerHTML = `<div class="suggest-box">📒 <b>${name}</b> — logged ${m.count}x (${m.analyzed} with glucose data):<br>
+      Avg peak <b>${m.avgPeak}</b> mmol/L ~${m.timeToPeak} after · back in range ~<b>${m.returnToRange}</b> · low risk after: <span style="${lowStyle}">${m.lowRiskAfter}</span>
+      ${m.delayedRise.flag ? `<br>⚠️ <b>Delayed-rise meal:</b> similar logs climbed again ~${m.delayedRise.atHours}h later — the high-fat/protein pattern. Worth a glance around then.` : ''}</div>`;
+  } catch (e) { el.innerHTML = ''; }
 }
 
 // Workout presets: same pattern, but just a name (no fixed "amount"). Keeps workout-type
@@ -547,11 +639,13 @@ function setupBackdate(toggleId, inputId) {
 async function addBolus() {
   const u = parseFloat(document.getElementById('bolusIn').value), c = parseFloat(document.getElementById('carbIn').value);
   if (!(u > 0) && !(c > 0)) return;
-  const r = await api('/api/entries/bolus', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: u > 0 ? u : 0, carbs: c > 0 ? c : null, time: getEntryTime('bolusTimeIn') }) });
+  const r = await api('/api/entries/bolus', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: u > 0 ? u : 0, carbs: c > 0 ? c : null, time: getEntryTime('bolusTimeIn'), mealName: _selectedMeal }) });
   if (r && r.error) { toast(r.error, true); return; }
   buzz();
+  _selectedMeal = null;
   document.getElementById('bolusIn').value = ''; document.getElementById('carbIn').value = '';
   document.getElementById('mealSuggestion').innerHTML = '';
+  document.getElementById('mealMemory').innerHTML = '';
   // Scoped to #qc - clearing every .qc button would also wipe the workout preset row's
   // selected state on the Activity tab (they're deliberately independent).
   document.querySelectorAll('#qc button').forEach(b => b.classList.remove('on'));
@@ -687,6 +781,11 @@ async function updateCorrSuggestion() {
     if (r.stale) {
       html += `<div class="suggest-box" style="background:var(--orange-l);color:#c2410c">⚠️ Last reading is ~${r.readingAgeMinutes}min old — check your Libre app before dosing off this.</div>`;
     }
+    // The do-not-stack caution outranks everything else here - it targets exactly the
+    // tired/frustrated moment where a second correction feels right but isn't.
+    if (r.stackingCaution) {
+      html += `<div class="suggest-box" style="background:var(--red-l);color:var(--red)">🛑 ${r.stackingCaution}</div>`;
+    }
     if (r.factorTooLow) {
       html += `<div class="suggest-box" style="background:var(--orange-l);color:#c2410c">Your correction factor (${r.factor}/unit) looks too low to be reliable — not confident enough to suggest a dose yet. Log a few more corrections without carbs nearby to firm this up.</div>`;
     } else if (r.suggestedUnits != null) {
@@ -719,7 +818,7 @@ async function updateMealSuggestion() {
   const el = document.getElementById('mealSuggestion');
   if (!c || c <= 0) { el.innerHTML = ''; return; }
   try {
-    const r = await api('/api/meal-suggestion?carbs=' + c);
+    const r = await api('/api/meal-suggestion?carbs=' + c + (_selectedMeal ? '&meal=' + encodeURIComponent(_selectedMeal) : ''));
     if (r.suggestion != null) { el.innerHTML = `<div class="suggest-box">Suggested dose: ~${r.suggestion}u for ${c}g (based on ${r.basedOn} similar past meals)${r.note ? '<br>' + r.note : ''}</div>`; }
     else { el.innerHTML = `<div class="suggest-box">${r.message || 'Log a few more meals to get personalised suggestions.'}</div>`; }
   } catch (e) { el.innerHTML = ''; }
@@ -1095,7 +1194,12 @@ setupBackdate('workoutTimeToggle', 'workoutTimeIn');
 
 document.getElementById('bolusIn').addEventListener('input', updateBolusBtn);
 document.getElementById('bolusIn').addEventListener('keydown', e => { if (e.key === 'Enter') addBolus(); });
-document.getElementById('carbIn').addEventListener('input', function () { updateBolusBtn(); debouncedMealSuggestion(); });
+document.getElementById('carbIn').addEventListener('input', function () {
+  // Manual typing means this is no longer "the preset meal" - drop the tag so meal memory
+  // only aggregates logs that genuinely came from the named preset.
+  if (_selectedMeal) { _selectedMeal = null; document.querySelectorAll('#qc button').forEach(b => b.classList.remove('on')); document.getElementById('mealMemory').innerHTML = ''; }
+  updateBolusBtn(); debouncedMealSuggestion();
+});
 document.getElementById('carbIn').addEventListener('keydown', e => { if (e.key === 'Enter') addBolus(); });
 
 document.getElementById('corrUnitsIn').addEventListener('input', function () { document.getElementById('addCorrBtn').disabled = !this.value || parseFloat(this.value) <= 0; debouncedCorrSuggestion(); });
@@ -1119,6 +1223,7 @@ async function init() {
   await fetchSettings();
   fetchEntries(); fetchGlucose(); loadChart(true); loadAlerts(); loadForecast(); loadMealPresets(); loadWorkoutPresets();
   requestAnimationFrame(moveGlider); // appPage just became visible; tab widths are now real
+  try { if (localStorage.getItem('simpleMode')) enterSimple(); } catch (e) {}
   setInterval(render, 30000); // ticks IOB/COB/basal countdown between fetches
   // fetchEntries included so server-side changes (a correction resolving on a glucose poll)
   // show up without requiring a manual log action or reload.

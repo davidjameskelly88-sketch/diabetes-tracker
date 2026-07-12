@@ -64,6 +64,7 @@
     <div class="ig"><label>Carbs (g)</label><input type="number" inputmode="decimal" id="carbIn" placeholder="e.g. 45"></div>
     <div class="ig"><label>Novorapid (u)</label><input type="number" inputmode="decimal" id="bolusIn" placeholder="optional"></div>
   </div>
+  <div id="mealMemory"></div>
   <div id="mealSuggestion"></div>
   <button class="backdate-toggle" id="bolusTimeToggle" type="button">🕐 Backdate</button>
   <input type="datetime-local" id="bolusTimeIn" class="backdate-input">
@@ -143,6 +144,7 @@
 <!-- INSIGHTS -->
 <div class="panel" id="panel-insights">
 <div class="card"><div class="card-title">💪 Insulin Health Check</div><div id="insulinHealth"><div class="empty">Loading…</div></div></div>
+<div class="card"><div class="card-title">🗺️ Sensitivity Map</div><div id="sensMap"><div class="empty">Loading…</div></div></div>
 <div class="card"><div class="card-title">🧠 Pattern Analysis</div><div id="insightsList"><div class="empty">Loading…</div></div></div>
 <div class="card"><div class="card-title">🎯 Correction History</div><div id="corrHistory"><div class="empty">No corrections logged yet</div></div></div>
 </div>
@@ -203,6 +205,16 @@
 </div>
 
 <p class="footer">IOB: exponential model, peak ~75min, 4h duration. COB: linear absorption over 3h.<br>Correction factor: auto-calculated from your history. Not medical software — personal tracking only.</p>
+
+<button id="simpleToggle" title="Simple view" onclick="enterSimple()">😴</button>
+<div id="simpleView" style="display:none">
+  <div class="simple-inner">
+    <div class="simple-block"><div class="simple-label">Now</div><div class="simple-now" id="simpleNow">—</div><div class="simple-trend" id="simpleTrend"></div></div>
+    <div class="simple-block"><div class="simple-label">Risk · next 2h</div><div class="simple-risk" id="simpleRisk">—</div></div>
+    <div class="simple-block"><div class="simple-label">Action</div><div class="simple-action" id="simpleAction">—</div></div>
+    <button class="btn btn-dark" style="margin-top:24px" onclick="exitSimple()">Exit simple view</button>
+  </div>
+</div>
 </div>
 
 <script src="app.js"></script>
