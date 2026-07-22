@@ -171,7 +171,15 @@ function toast(msg, isError) {
 
 // ─── Auth ───────────────────────────────────────────────────────────────
 async function checkAuth() { try { const r = await fetch('/api/auth-check'); if (r.ok) { showApp(); return; } } catch (e) {} document.getElementById('loginPage').style.display = 'flex'; }
-async function doLogin() { const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pwInput').value }) }); if (r.ok) showApp(); else document.getElementById('loginErr').style.display = 'block'; }
+async function doLogin() {
+  const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pwInput').value }) });
+  if (r.ok) { showApp(); return; }
+  // Surface the server's actual message (e.g. the rate-limit lockout) rather than a fixed
+  // "Wrong password", so a locked-out user knows to wait rather than keep hammering.
+  const errEl = document.getElementById('loginErr');
+  try { const d = await r.json(); errEl.textContent = d.error || 'Wrong password'; } catch (e) { errEl.textContent = 'Wrong password'; }
+  errEl.style.display = 'block';
+}
 function showApp() { document.getElementById('loginPage').style.display = 'none'; document.getElementById('appPage').style.display = 'block'; init(); }
 
 async function api(u, o) { const r = await fetch(u, o); if (r.status === 401) location.reload(); return r.json(); }
@@ -201,7 +209,7 @@ function showTab(t) {
   if (t === 'activity') { loadActivities(); renderSimPresets(); }
   if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); loadSensitivityMap(); }
   if (t === 'summary') loadDailySummary();
-  if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); renderThemeSeg(); }
+  if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); renderThemeSeg(); renderAlertSeg(); }
 }
 
 // Swipe left/right anywhere outside the chart (which owns horizontal drags for scrubbing)
@@ -242,7 +250,13 @@ async function fetchGlucose() {
     // The ONE exception: a genuinely old reading (>30min, beyond normal follower lag) shows
     // an age warning - trusting a big number that's an hour stale is worse than noise.
     const ageMin = Math.max(0, Math.round((Date.now() - (new Date(d.timestamp).getTime() || d.fetchedAt)) / 60000));
-    const staleHtml = ageMin > 30 ? `<div class="g-stale">⚠️ Reading is ~${ageMin}min old</div>` : '';
+    // Escalates with age: past normal follower lag it's just "old"; past ~40min with nothing
+    // new it's more likely a sensor gap (warmup/change/out-of-range) than lag, so say so and
+    // point at the primary app. (Local BST dev reads ~1h high per the FactoryTimestamp quirk;
+    // correct on Render/UTC.)
+    const staleHtml = ageMin > 40
+      ? `<div class="g-stale">⚠️ No new readings for ~${ageMin}min — sensor may be warming up or changing. Check your Libre app.</div>`
+      : ageMin > 30 ? `<div class="g-stale">⚠️ Reading is ~${ageMin}min old</div>` : '';
     disp.innerHTML = `${deltaHtml}<div class="g-val" style="color:var(${statusColorVar(d.value)})"><span id="gNum">${(_gShown != null ? _gShown : d.value).toFixed(1)}</span><span class="g-trend">${d.trend || ''}</span><span class="u">mmol/L</span></div>${staleHtml}`;
     if (_gShown != null && _gShown !== d.value) {
       tweenNumber(document.getElementById('gNum'), _gShown, d.value, 500);
@@ -251,6 +265,7 @@ async function fetchGlucose() {
     _gShown = d.value;
     _lastGlucose = d;
     renderSimple();
+    checkUrgentAlert(); // an actual low right now should reach you, not just sit on the card
     updateCorrSuggestion(); // keep the correction suggestion current as glucose changes, not just on typing
   } catch (e) { card.className = 'glucose'; disp.innerHTML = '<div style="color:var(--dim);font-size:13px">Could not connect</div>'; }
 }
@@ -341,9 +356,69 @@ async function loadForecast() {
   try {
     renderForecast(await api('/api/hypo-forecast'));
     renderSimple();
+    checkUrgentAlert(); // a fresh "high" forecast should reach you actively
     // The chart draws the projection from _lastForecast - repaint so it tracks the new one.
     if (window._chart) drawChart(_chart.data, _chart.events);
   } catch (e) {}
+}
+
+// ─── Urgent hypo nudge ───────────────────────────────────────────────────
+// The forecast card and glucose number are passive - you have to be looking. This makes an
+// ACTUAL low (a reading below your target) or a "high" 2h hypo forecast reach you actively: a
+// short two-tone beep + vibration, re-fired at most every 10min while the condition holds (and
+// again immediately if the condition changes). Sound is opt-out (Settings › Alert Sound), since
+// a medical app that beeps at you unbidden is its own kind of stress; vibration still fires.
+function alertsEnabled() { try { return localStorage.getItem('alertSound') !== '0'; } catch (e) { return true; } }
+let _audioCtx = null;
+function playAlertTone() {
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === 'suspended') _audioCtx.resume();
+    const now = _audioCtx.currentTime;
+    [880, 660].forEach((freq, i) => {
+      const osc = _audioCtx.createOscillator(), gain = _audioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq;
+      const t0 = now + i * 0.22;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.15, t0 + 0.02);
+      gain.gain.linearRampToValueAtTime(0, t0 + 0.2);
+      osc.connect(gain).connect(_audioCtx.destination);
+      osc.start(t0); osc.stop(t0 + 0.22);
+    });
+  } catch (e) {}
+}
+let _lastNudgeKey = null, _lastNudgeAt = 0;
+function checkUrgentAlert() {
+  const g = _lastGlucose, f = window._lastForecast;
+  let key = null, msg = null;
+  // An actual low outranks a forecast - it's happening, not projected.
+  if (g && g.value != null && g.value < settings.targetLow) {
+    key = 'low'; msg = `⚠️ Low now: ${g.value.toFixed(1)} mmol/L`;
+  } else if (f && f.available && f.risk === 'high') {
+    key = 'forecast-high'; msg = `⚠️ High hypo risk — projected ~${f.projectedLow < 3 ? 'below 3' : f.projectedLow} within ${f.horizonHours}h`;
+  }
+  if (!key) { _lastNudgeKey = null; return; }
+  const now = Date.now();
+  if (key === _lastNudgeKey && now - _lastNudgeAt < 10 * 60000) return; // don't nag more than every 10min
+  _lastNudgeKey = key; _lastNudgeAt = now;
+  buzz([200, 100, 200, 100, 200]);
+  if (alertsEnabled()) playAlertTone();
+  toast(msg, true);
+}
+// Settings toggle for the alert tone. Tapping "On" also plays the tone once - immediate
+// confirmation, and it doubles as the user gesture that unlocks the AudioContext on mobile.
+function renderAlertSeg() {
+  const el = document.getElementById('alertSeg');
+  if (!el) return;
+  el.innerHTML = '';
+  const cur = alertsEnabled() ? '1' : '0';
+  [['1', '🔔 On'], ['0', '🔕 Off']].forEach(([v, label]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cur === v) b.classList.add('on');
+    b.onclick = () => { try { localStorage.setItem('alertSound', v); } catch (e) {} renderAlertSeg(); if (v === '1') playAlertTone(); };
+    el.appendChild(b);
+  });
 }
 
 async function loadActivities() {
@@ -1069,7 +1144,9 @@ function drawChart(data, events = [], opts = {}) {
   const fcTime = showFc ? lastPt.time + fc.horizonHours * 3600000 : null;
   const vals = data.map(d => d.value);
   let mn = Math.min(...vals, 3.5, showFc ? fc.projectedLow : 3.5), mx = Math.max(...vals, 12);
-  mn = Math.floor(mn); mx = Math.ceil(mx);
+  // Floor the axis at 2: the sensor bottoms out around 2.2, and a forecast projectedLow can go
+  // arithmetically negative (stacked insulin), which would otherwise drag the y-axis below zero.
+  mn = Math.max(2, Math.floor(mn)); mx = Math.ceil(mx);
   const tMin = data[0].time, tMax = showFc ? fcTime : data[data.length - 1].time, tRange = tMax - tMin || 1;
   const x = t => (pad.l + ((t - tMin) / tRange) * cW);
   const y = v => (pad.t + cH - (((v - mn) / (mx - mn)) * cH));
@@ -1145,14 +1222,19 @@ function drawChart(data, events = [], opts = {}) {
   // Forecast projection: dotted risk-colored line from the last reading to the 2h forecast
   // point, hollow end marker + value label - the risk card's number, made visible in place.
   if (showFc) {
+    // Clamp the drawn endpoint to the axis floor so a sub-2 (or negative) projection sits on the
+    // bottom edge rather than painting off-canvas into the x-axis labels; the label text still
+    // conveys the true severity ("<3") instead of an impossible number.
+    const fcDrawVal = Math.max(mn, fc.projectedLow);
+    const fcLabel = fc.projectedLow < 3 ? '<3' : '~' + fc.projectedLow;
     const riskColor = cssVar(fc.risk === 'high' ? '--red' : fc.risk === 'moderate' ? '--orange' : fc.risk === 'low' ? '--blue' : '--green');
     ctx.strokeStyle = riskColor; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(x(lastPt.time), y(lastPt.value)); ctx.lineTo(x(fcTime), y(fc.projectedLow)); ctx.stroke(); ctx.setLineDash([]);
-    ctx.beginPath(); ctx.arc(x(fcTime), y(fc.projectedLow), 4, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.moveTo(x(lastPt.time), y(lastPt.value)); ctx.lineTo(x(fcTime), y(fcDrawVal)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x(fcTime), y(fcDrawVal), 4, 0, Math.PI * 2);
     ctx.fillStyle = cssVar('--card'); ctx.fill();
     ctx.strokeStyle = riskColor; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = riskColor; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'right';
-    ctx.fillText('~' + fc.projectedLow, x(fcTime) - 3, Math.max(pad.t + 10, y(fc.projectedLow) - 8));
+    ctx.fillText(fcLabel, x(fcTime) - 3, Math.max(pad.t + 10, y(fcDrawVal) - 8));
   }
 
   // Event markers

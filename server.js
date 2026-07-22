@@ -19,7 +19,14 @@ const { registerRoutes } = require('./lib/routes');
 setOnGlucoseFetched(resolveCorrections);
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// Render/Glitch terminate TLS at a proxy, so the real client IP arrives via X-Forwarded-For
+// and HTTPS via X-Forwarded-Proto. Trusting the first proxy hop makes req.ip (the login
+// rate-limiter's key) and req.secure (the auth cookie's Secure flag) reflect the real client.
+app.set('trust proxy', 1);
+// 5mb (up from 1mb): Health Auto Export payloads embed per-minute heart-rate arrays we discard
+// server-side, but Express still has to parse the whole body first - a multi-workout export can
+// clear 1mb and would otherwise 413 and silently break the Apple Health sync.
+app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 registerRoutes(app);
