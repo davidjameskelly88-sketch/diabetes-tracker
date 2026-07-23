@@ -249,11 +249,14 @@ async function fetchGlucose() {
     // reading age mostly reflected LibreLinkUp's documented follower lag, not anything useful.
     // The ONE exception: a genuinely old reading (>30min, beyond normal follower lag) shows
     // an age warning - trusting a big number that's an hour stale is worse than noise.
-    const ageMin = Math.max(0, Math.round((Date.now() - (new Date(d.timestamp).getTime() || d.fetchedAt)) / 60000));
+    // Use the server-computed UTC epoch (readingMs), NOT new Date(d.timestamp) - the raw
+    // FactoryTimestamp string has no timezone marker, so re-parsing it here read it in the
+    // phone's local zone and inflated the age by the UTC offset (~1h in BST), firing the stale
+    // warning on every fresh reading. Epoch-to-epoch subtraction is timezone-independent.
+    const ageMin = Math.max(0, Math.round((Date.now() - (d.readingMs || new Date(d.timestamp).getTime() || d.fetchedAt)) / 60000));
     // Escalates with age: past normal follower lag it's just "old"; past ~40min with nothing
     // new it's more likely a sensor gap (warmup/change/out-of-range) than lag, so say so and
-    // point at the primary app. (Local BST dev reads ~1h high per the FactoryTimestamp quirk;
-    // correct on Render/UTC.)
+    // point at the primary app.
     const staleHtml = ageMin > 40
       ? `<div class="g-stale">⚠️ No new readings for ~${ageMin}min — sensor may be warming up or changing. Check your Libre app.</div>`
       : ageMin > 30 ? `<div class="g-stale">⚠️ Reading is ~${ageMin}min old</div>` : '';
