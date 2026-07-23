@@ -105,11 +105,24 @@ let _iobActivityPeak = 0;
 for (let t = 1; t < IOB_DIA; t++) { const a = iobActivityFraction(t); if (a > _iobActivityPeak) _iobActivityPeak = a; }
 const IOB_CHART_SCALE_UNITS = 10; // a dose this size at its peak fills ~35% of the overlay height
 
-// Carbs on board: simple linear absorption over COB_DURATION minutes. Carb absorption
-// varies far more by food type than insulin action does, so a linear model is the standard
-// pragmatic default (used by most bolus calculators) rather than a tuned curve like IOB's.
-const COB_DURATION = 180;
-function cobFraction(t) { if (t <= 0) return 1; if (t >= COB_DURATION) return 0; return 1 - t / COB_DURATION; }
+// Carbs on board. The absorption RATE is triangular - ramping up to COB_PEAK, then tailing to
+// zero by COB_DURATION - matching lib/analysis.js, which replaced flat-linear absorption because
+// it sat badly against the exponential insulin curve (constant carb trickle vs insulin peaking at
+// 75min produced an exaggerated mid-window dip in the forecast). Keep the two in sync.
+// The server additionally derives PER-MEAL peak/duration from meal memory for its forecasts;
+// this tile has no access to that, so it uses the generic shape - the tile is informational,
+// the forecast is what drives decisions.
+const COB_DURATION = 180, COB_PEAK = 60;
+function carbAbsorbedFraction(t, peakMin, durationMin) {
+  if (t <= 0) return 0;
+  if (t >= durationMin) return 1;
+  const peak = Math.min(Math.max(peakMin, 5), durationMin - 5);
+  const h = 2 / durationMin;
+  if (t <= peak) return h * t * t / (2 * peak);
+  const tail = durationMin - peak;
+  return h * peak / 2 + h * (tail * tail - (durationMin - t) ** 2) / (2 * tail);
+}
+function cobFraction(t) { return 1 - carbAbsorbedFraction(t, COB_PEAK, COB_DURATION); }
 function calcCOB() { const now = Date.now(); let t = 0; for (const b of boluses) { if (!b.carbs) continue; const e = (now - b.time) / 60000; t += b.carbs * cobFraction(e); } return t; }
 // IOB sums over corrections too - a correction is still an insulin injection; COB doesn't,
 // since corrections carry no carbs.
