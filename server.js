@@ -11,12 +11,17 @@ const path = require('path');
 
 const { PORT } = require('./lib/config');
 const { login, fetchGlucose, setOnGlucoseFetched, POLL_MS } = require('./lib/libre');
-const { resolveCorrections } = require('./lib/analysis');
+const { resolveCorrections, scoreForecasts } = require('./lib/analysis');
 const { registerRoutes } = require('./lib/routes');
 
-// Wired here (not required inside libre.js) to avoid a libre<->analysis require cycle:
-// every uncached glucose fetch re-checks pending corrections against the new reading.
-setOnGlucoseFetched(resolveCorrections);
+// Wired here (not required inside libre.js) to avoid a libre<->analysis require cycle: every
+// uncached glucose fetch re-checks pending corrections, then grades any forecast whose horizon
+// has now elapsed against the reading that just arrived. Sequential (not parallel) - both do a
+// read-modify-write of the same blob, so they must not interleave.
+setOnGlucoseFetched(async () => {
+  await resolveCorrections();
+  await scoreForecasts();
+});
 
 const app = express();
 // Render/Glitch terminate TLS at a proxy, so the real client IP arrives via X-Forwarded-For

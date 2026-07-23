@@ -207,7 +207,7 @@ function showTab(t) {
   // tab was open skipped its redraw (hidden canvas measures 0x0, see drawChart).
   if (t === 'track') requestAnimationFrame(() => { if (window._chart) drawChart(_chart.data, _chart.events); });
   if (t === 'activity') { loadActivities(); renderSimPresets(); }
-  if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); loadSensitivityMap(); }
+  if (t === 'insights') { loadInsights(); loadCorrHistory(); loadInsulinHealth(); loadForecastAccuracy(); loadSensitivityMap(); }
   if (t === 'summary') loadDailySummary();
   if (t === 'settings') { fetchSettings(); loadPresetManager(); loadWorkoutPresetManager(); renderThemeSeg(); renderAlertSeg(); }
 }
@@ -350,8 +350,12 @@ function renderForecast(f) {
   const factorsHtml = f.factors.length && _riskExpanded
     ? `<ul class="risk-factors">${f.factors.map(x => `<li>${x}</li>`).join('')}</ul>`
     : f.factors.length ? `<div class="risk-factors">${f.factors[0]}${f.factors.length > 1 ? ` <span style="color:var(--blue);font-weight:600">+${f.factors.length - 1} more</span>` : ''}</div>` : '';
+  // The trough (and when it lands) is the actionable number; the band is the honest width around
+  // it. A dip at 45min that recovers by 2h used to be invisible - now it's the headline.
+  const troughTxt = f.troughAtMin ? ` in ~${f.troughAtMin}min` : '';
+  const rangeTxt = f.range ? ` <span style="opacity:.7">(${f.range[0] < 3 ? '<3' : f.range[0]}–${f.range[1]})</span>` : '';
   card.innerHTML = `<div class="risk-row" onclick="toggleRiskFactors()" style="cursor:pointer">
-      <div class="risk-title">Hypo risk · next ${f.horizonHours}h <span style="color:var(--dim);font-weight:400">→ ~${f.projectedLow < 3 ? 'below 3' : f.projectedLow}</span></div>
+      <div class="risk-title">Hypo risk · next ${f.horizonHours}h <span style="color:var(--dim);font-weight:400">→ ~${f.projectedLow < 3 ? 'below 3' : f.projectedLow}${troughTxt}${rangeTxt}</span></div>
       <div class="risk-badge ${f.risk}">${f.risk}</div>
     </div>${factorsHtml}${f.carbs ? `<div class="risk-carbs">🍬 ${f.carbs}</div>` : ''}`;
 }
@@ -526,6 +530,41 @@ function tirSeg(cls, pct) { return pct > 0.5 ? `<i class="${cls}" data-w="${pct.
 function animateTirBars(scope) {
   requestAnimationFrame(() => requestAnimationFrame(() =>
     scope.querySelectorAll('.tir-bar i').forEach(i => { i.style.width = i.dataset.w + '%'; })));
+}
+
+// Forecast accuracy: how the 2h hypo prediction actually performed. Bias is the headline - a
+// persistent negative means the forecast sits below reality and is crying wolf. Precision/recall
+// matter more than the decimal place for a warning: crying wolf vs missing real lows.
+async function loadForecastAccuracy() {
+  const el = document.getElementById('forecastAcc');
+  if (!el.dataset.loaded) skeleton(el, 2);
+  try {
+    const a = await api('/api/forecast-accuracy');
+    el.dataset.loaded = '1';
+    if (!a.available) { el.innerHTML = `<div class="empty">${a.message}</div>`; return; }
+    const biasWord = Math.abs(a.bias) < 0.3 ? 'well centred'
+      : a.bias < 0 ? `running ${Math.abs(a.bias)} mmol/L pessimistic (predicting lower than reality)`
+      : `running ${a.bias} mmol/L optimistic (predicting higher than reality)`;
+    let html = `<div class="daily-grid">
+      <div class="daily-stat"><div class="dv" style="color:${Math.abs(a.bias) > 1 ? 'var(--orange)' : 'inherit'}">${a.bias > 0 ? '+' : ''}${a.bias}</div><div class="dl">Bias (mmol/L)</div></div>
+      <div class="daily-stat"><div class="dv">${a.mae}</div><div class="dl">Avg error</div></div>
+      <div class="daily-stat"><div class="dv">${a.within1}%</div><div class="dl">Within 1.0</div></div>
+    </div>`;
+    if (a.precision != null || a.recall != null) {
+      html += `<div class="daily-grid">
+        <div class="daily-stat"><div class="dv">${a.precision != null ? a.precision + '%' : '—'}</div><div class="dl">Warnings that were real</div></div>
+        <div class="daily-stat"><div class="dv">${a.recall != null ? a.recall + '%' : '—'}</div><div class="dl">Lows it caught</div></div>
+        <div class="daily-stat"><div class="dv">${a.scored}</div><div class="dl">Forecasts scored</div></div>
+      </div>`;
+    }
+    html += `<div class="sens-note">Across ${a.scored} forecasts checked against what actually happened 2h later, the projection is <b>${biasWord}</b>, off by ${a.mae} mmol/L on average (${a.within2}% within 2.0).`;
+    if (a.warnings) html += ` It raised ${a.warnings} moderate/high warnings and ${a.lows} real lows occurred.`;
+    html += `</div>`;
+    if (a.calibratedBias != null && a.uncalibratedBias != null) {
+      html += `<div class="sens-note">Calibrated forecasts: bias ${a.calibratedBias > 0 ? '+' : ''}${a.calibratedBias} (n=${a.calibratedCount}) vs uncalibrated ${a.uncalibratedBias > 0 ? '+' : ''}${a.uncalibratedBias} (n=${a.uncalibratedCount}).</div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = '<div class="empty">Could not load.</div>'; }
 }
 
 // Sensitivity map: correction strength by time-of-day bucket (+ post-exercise vs rest),
@@ -1182,7 +1221,10 @@ function drawChart(data, events = [], opts = {}) {
   const fc = window._lastForecast;
   const lastPt = data[data.length - 1];
   const showFc = !!(fc && fc.available && (Date.now() - lastPt.time) < 45 * 60000);
-  const fcTime = showFc ? lastPt.time + fc.horizonHours * 3600000 : null;
+  // The simulated path is anchored at "now" (where the simulation starts), not at the last
+  // reading, so the drawn curve lines up with the minutes the forecast actually modelled.
+  const fcAnchor = Date.now();
+  const fcTime = showFc ? fcAnchor + fc.horizonHours * 3600000 : null;
   const vals = data.map(d => d.value);
   let mn = Math.min(...vals, 3.5, showFc ? fc.projectedLow : 3.5), mx = Math.max(...vals, 12);
   // Floor the axis at 2: the sensor bottoms out around 2.2, and a forecast projectedLow can go
@@ -1270,12 +1312,23 @@ function drawChart(data, events = [], opts = {}) {
     const fcLabel = fc.projectedLow < 3 ? '<3' : '~' + fc.projectedLow;
     const riskColor = cssVar(fc.risk === 'high' ? '--red' : fc.risk === 'moderate' ? '--orange' : fc.risk === 'low' ? '--blue' : '--green');
     ctx.strokeStyle = riskColor; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(x(lastPt.time), y(lastPt.value)); ctx.lineTo(x(fcTime), y(fcDrawVal)); ctx.stroke(); ctx.setLineDash([]);
-    ctx.beginPath(); ctx.arc(x(fcTime), y(fcDrawVal), 4, 0, Math.PI * 2);
+    ctx.beginPath();
+    ctx.moveTo(x(lastPt.time), y(lastPt.value));
+    // Draw the simulated curve point-by-point where available - the shape (dip, then recovery)
+    // is the whole reason for simulating rather than projecting a single endpoint.
+    if (Array.isArray(fc.path) && fc.path.length) {
+      fc.path.forEach(p => ctx.lineTo(x(fcAnchor + p.min * 60000), y(Math.max(mn, p.value))));
+    } else {
+      ctx.lineTo(x(fcTime), y(fcDrawVal));
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    // Marker sits on the trough (the number being warned about), not the far end of the horizon.
+    const troughTime = fcAnchor + (fc.troughAtMin != null ? fc.troughAtMin : fc.horizonHours * 60) * 60000;
+    ctx.beginPath(); ctx.arc(x(troughTime), y(fcDrawVal), 4, 0, Math.PI * 2);
     ctx.fillStyle = cssVar('--card'); ctx.fill();
     ctx.strokeStyle = riskColor; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = riskColor; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'right';
-    ctx.fillText(fcLabel, x(fcTime) - 3, Math.max(pad.t + 10, y(fcDrawVal) - 8));
+    ctx.fillText(fcLabel, x(troughTime) - 3, Math.max(pad.t + 10, y(fcDrawVal) - 8));
   }
 
   // Event markers
