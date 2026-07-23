@@ -50,6 +50,8 @@
 
 <div class="card" id="hypoCard" style="display:none"></div>
 
+<div id="calibrationBox"></div>
+
 <div id="alertsBox"></div>
 
 <div class="card">
@@ -79,6 +81,12 @@
   </div>
   <div id="mealMemory"></div>
   <div id="mealSuggestion"></div>
+  <!-- Appears only when the units entered exceed carb coverage, i.e. the dose really contains a
+       correction. Splitting keeps meal ratios honest and lets the correction factor learn. -->
+  <label class="split-toggle" id="splitToggle" style="display:none">
+    <input type="checkbox" id="splitCheck" checked>
+    <span id="splitLabel"></span>
+  </label>
   <button class="backdate-toggle" id="bolusTimeToggle" type="button">🕐 Backdate</button>
   <input type="datetime-local" id="bolusTimeIn" class="backdate-input">
   <button class="btn btn-blue" id="addBolusBtn" disabled onclick="addBolus()">＋ Log bolus</button>

@@ -147,6 +147,10 @@ html.dark .tabs{box-shadow:0 -2px 12px rgba(0,0,0,.4)}
 .daily-stat .dv{font-size:20px;font-weight:700}.daily-stat .dl{font-size:10px;color:var(--dim);margin-top:2px}
 .suggest-box{background:var(--purple-l);border-radius:10px;padding:10px 12px;margin-top:8px;margin-bottom:8px;font-size:12px;color:#5b21b6}
 html.dark .suggest-box{color:#c4b5fd}
+/* Combined meal+correction split opt-in - only rendered when the dose actually contains one */
+.split-toggle{display:flex;align-items:flex-start;gap:9px;background:var(--orange-l);border-radius:10px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.45;color:#c2410c;cursor:pointer}
+html.dark .split-toggle{color:#fdba74}
+.split-toggle input{width:17px;height:17px;flex:none;margin:1px 0 0;accent-color:var(--orange);cursor:pointer}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
 .grid3 .stat{padding:10px}
 .grid3 .stat-val{font-size:19px}

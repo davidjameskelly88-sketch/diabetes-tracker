@@ -355,9 +355,22 @@ function renderForecast(f) {
       <div class="risk-badge ${f.risk}">${f.risk}</div>
     </div>${factorsHtml}${f.carbs ? `<div class="risk-carbs">🍬 ${f.carbs}</div>` : ''}`;
 }
+// Until 3 clean corrections exist the forecast is trend-only - it doesn't convert insulin or
+// carbs into a glucose effect at all. That's invisible otherwise (the card still shows an IOB
+// figure in its factor list), so say it plainly where the number is being read.
+function renderCalibration(f) {
+  const el = document.getElementById('calibrationBox');
+  if (!el) return;
+  if (!f || !f.available || f.calibrated || f.correctionCount == null) { el.innerHTML = ''; return; }
+  const n = f.correctionCount;
+  el.innerHTML = `<div class="insight info" style="margin-bottom:12px">⚙️ <b>Forecast is uncalibrated (${n}/3 corrections).</b> The projection above is based on your glucose trend only — it isn't yet converting the ${f.iob}u on board into an expected drop. Log correction doses with ⚡ (or tick "includes a correction" on a meal) and it starts learning your mmol-per-unit automatically.</div>`;
+}
+
 async function loadForecast() {
   try {
-    renderForecast(await api('/api/hypo-forecast'));
+    const f = await api('/api/hypo-forecast');
+    renderForecast(f);
+    renderCalibration(f);
     renderSimple();
     checkUrgentAlert(); // a fresh "high" forecast should reach you actively
     // The chart draws the projection from _lastForecast - repaint so it tracks the new one.
@@ -763,13 +776,21 @@ function setupBackdate(toggleId, inputId) {
 async function addBolus() {
   const u = parseFloat(document.getElementById('bolusIn').value), c = parseFloat(document.getElementById('carbIn').value);
   if (!(u > 0) && !(c > 0)) return;
-  const r = await api('/api/entries/bolus', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: u > 0 ? u : 0, carbs: c > 0 ? c : null, time: getEntryTime('bolusTimeIn'), mealName: _selectedMeal }) });
+  // When the split toggle is showing and ticked, one tap writes both entries server-side.
+  const splitWrap = document.getElementById('splitToggle');
+  const wantsSplit = splitWrap && splitWrap.style.display !== 'none' && document.getElementById('splitCheck').checked;
+  const body = { units: u > 0 ? u : 0, carbs: c > 0 ? c : null, time: getEntryTime('bolusTimeIn'), mealName: _selectedMeal };
+  const r = wantsSplit
+    ? await api('/api/entries/combined', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    : await api('/api/entries/bolus', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (r && r.error) { toast(r.error, true); return; }
+  if (r && r.split) toast(`Logged ${r.bolus.units}u meal + ${r.correction.units}u correction`);
   buzz();
   _selectedMeal = null;
   document.getElementById('bolusIn').value = ''; document.getElementById('carbIn').value = '';
   document.getElementById('mealSuggestion').innerHTML = '';
   document.getElementById('mealMemory').innerHTML = '';
+  document.getElementById('splitCheck').checked = true; // default back on for the next entry
   // Scoped to #qc - clearing every .qc button would also wipe the workout preset row's
   // selected state on the Activity tab (they're deliberately independent).
   document.querySelectorAll('#qc button').forEach(b => b.classList.remove('on'));
@@ -960,6 +981,23 @@ function updateBolusBtn() {
   const btn = document.getElementById('addBolusBtn');
   btn.disabled = !((u > 0) || (c > 0));
   btn.textContent = (u > 0) ? '＋ Log bolus' : '＋ Log carbs (no insulin)';
+  updateSplitToggle(u, c);
+}
+
+// One-move combined logging: if the units entered are more than the carbs alone need, the dose
+// contains a correction. Offer to record it as meal + correction in a single tap - same total
+// insulin, but the meal model stops learning a bogus insulin:carb ratio and the correction model
+// gets a data point it can net the carbs back out of.
+function updateSplitToggle(u, c) {
+  const wrap = document.getElementById('splitToggle'), label = document.getElementById('splitLabel');
+  if (!wrap) return;
+  const ratio = settings.carbRatio;
+  if (!ratio || !(u > 0) || !(c > 0)) { wrap.style.display = 'none'; return; }
+  const carbPortion = c / ratio;
+  const corr = Math.round((u - carbPortion) * 10) / 10;
+  if (corr < 0.5) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  label.innerHTML = `This includes a correction — log as <b>${(u - corr).toFixed(1)}u for ${c}g</b> + <b>${corr}u correction</b> so the app can learn your correction factor.`;
 }
 
 // ─── "What if I..." simulator ───────────────────────────────────────────
